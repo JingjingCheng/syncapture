@@ -32,13 +32,14 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif !important; }
   --bg:#ffffff; --surface:#f8f9fa; --border:rgba(0,0,0,0.08); --accent:#1a6b55;
   --accent-l:#eaf2ef; --text:#1a1a1a; --muted:#6b7280;
 }
-.main .block-container { padding: 0.5rem 1rem 1rem 1rem; max-width: 100%; }
+.main .block-container { padding: 0.5rem 0 1rem 0 !important; max-width: 100% !important; }
+.block-container { padding-left: 0 !important; padding-right: 0 !important; }
 section[data-testid="stSidebar"] { min-width: 310px !important; max-width: 340px !important; }
 section[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] { padding: 0; }
-/* Make the Plotly chart container fill available height */
-[data-testid="stPlotlyChart"] { min-height: calc(100vh - 260px); }
-[data-testid="stPlotlyChart"] > div { height: 100% !important; }
-[data-testid="stPlotlyChart"] iframe { height: 100% !important; }
+/* Make the Plotly chart fill full width and available height */
+[data-testid="stPlotlyChart"] { width: 100% !important; min-height: calc(100vh - 260px); }
+[data-testid="stPlotlyChart"] > div { width: 100% !important; height: 100% !important; }
+[data-testid="stPlotlyChart"] iframe { width: 100% !important; height: 100% !important; }
 div[data-testid="stMetric"] { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:0.5rem 0.7rem; }
 .stButton > button { border-radius:6px; font-size:0.82rem; font-weight:500; }
 .stButton > button[kind="primary"] { background:var(--accent); border:none; }
