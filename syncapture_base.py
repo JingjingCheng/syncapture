@@ -133,10 +133,13 @@ def _plotly_relayout_component_html():
       opacity: 1;
       transform: translateY(0);
     }
+    #chart:focus {
+      outline: none;
+    }
   </style>
 </head>
 <body>
-  <div id="chart"></div>
+  <div id="chart" tabindex="0" aria-label="Trace chart"></div>
   <div id="chart-toast"></div>
   <script>
     const chart = document.getElementById("chart");
@@ -343,12 +346,70 @@ def _plotly_relayout_component_html():
       showToast("Added");
     }
 
+    function focusChart() {
+      if (document.activeElement !== chart && chart.focus) {
+        chart.focus({ preventScroll: true });
+      }
+    }
+
+    function axisRange(axisName) {
+      const axis = chart._fullLayout && chart._fullLayout[axisName];
+      if (!axis || !Array.isArray(axis.range)) {
+        return null;
+      }
+      const min = numberOrNull(axis.range[0]);
+      const max = numberOrNull(axis.range[1]);
+      if (min === null || max === null || max <= min) {
+        return null;
+      }
+      return [min, max];
+    }
+
+    function panAxis(axisName, direction, fraction) {
+      const range = axisRange(axisName);
+      if (!range) {
+        return null;
+      }
+      const delta = (range[1] - range[0]) * fraction * direction;
+      return [range[0] + delta, range[1] + delta];
+    }
+
+    function handleAxisKeydown(event) {
+      const key = event.key;
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(key)) {
+        return;
+      }
+      const fraction = event.shiftKey ? 0.24 : (event.altKey ? 0.025 : 0.08);
+      const update = {};
+      if (key === "ArrowLeft" || key === "ArrowRight") {
+        const range = panAxis("xaxis", key === "ArrowLeft" ? -1 : 1, fraction);
+        if (!range) {
+          return;
+        }
+        update["xaxis.range[0]"] = range[0];
+        update["xaxis.range[1]"] = range[1];
+      } else {
+        const range = panAxis("yaxis", key === "ArrowUp" ? 1 : -1, fraction);
+        if (!range) {
+          return;
+        }
+        update["yaxis.range[0]"] = range[0];
+        update["yaxis.range[1]"] = range[1];
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      Plotly.relayout(chart, update);
+    }
+
     function attachPlotHandlers() {
       if (plotHandlersAttached) {
         return;
       }
       plotHandlersAttached = true;
 
+      chart.addEventListener("mouseenter", focusChart);
+      chart.addEventListener("mousedown", focusChart, true);
+      chart.addEventListener("keydown", handleAxisKeydown);
       chart.addEventListener("mousedown", rememberPlotMouseEvent, true);
       chart.addEventListener("click", rememberPlotMouseEvent, true);
 
