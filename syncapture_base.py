@@ -32,15 +32,40 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif !important; }
   --bg:#ffffff; --surface:#f8f9fa; --border:rgba(0,0,0,0.08); --accent:#1a6b55;
   --accent-l:#eaf2ef; --text:#1a1a1a; --muted:#6b7280;
 }
-.main .block-container { padding: 0.5rem 0 1rem 0 !important; max-width: 100% !important; }
-.block-container { padding-left: 0 !important; padding-right: 0 !important; }
-section[data-testid="stSidebar"] { min-width: 310px !important; max-width: 340px !important; }
+header[data-testid="stHeader"] { display: none !important; height: 0 !important; }
+[data-testid="stAppViewContainer"] { top: 0 !important; margin-top: 0 !important; }
+[data-testid="stMain"] > .block-container,
+[data-testid="stMainBlockContainer"] { padding: 0.5rem 1.5rem 1rem 1.5rem !important; margin-top: 0 !important; max-width: 100% !important; }
+section[data-testid="stSidebar"] { min-width: 300px !important; max-width: 320px !important; }
 section[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] { padding: 0; }
+section[data-testid="stSidebar"] .block-container { padding-top: 0 !important; padding-bottom: 0.3rem !important; }
+section[data-testid="stSidebar"] > div { padding-top: 0 !important; }
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"] { padding-top: 0.4rem !important; }
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding-top: 0 !important; }
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"] > div:first-child { margin-top: 0 !important; padding-top: 0 !important; }
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] { display: none !important; }
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding-top: 0 !important; }
+/* Compact sidebar: reduce gaps between all widgets */
+section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: 0.35rem !important; }
+section[data-testid="stSidebar"] hr { margin: 0.2rem 0 !important; }
+section[data-testid="stSidebar"] .stSelectbox label,
+section[data-testid="stSidebar"] .stNumberInput label,
+section[data-testid="stSidebar"] .stSlider label,
+section[data-testid="stSidebar"] .stFileUploader label,
+section[data-testid="stSidebar"] .stTextInput label { font-size: 0.78rem !important; margin-bottom: 0 !important; }
+section[data-testid="stSidebar"] .stSelectbox,
+section[data-testid="stSidebar"] .stNumberInput,
+section[data-testid="stSidebar"] .stSlider,
+section[data-testid="stSidebar"] .stTextInput { margin-bottom: -0.3rem !important; }
+section[data-testid="stSidebar"] [data-testid="stExpander"] { margin-top: 0 !important; margin-bottom: 0 !important; }
+section[data-testid="stSidebar"] [data-testid="stExpander"] details { padding: 0 !important; }
+/* Compact file uploader: just reduce extra padding */
+section[data-testid="stSidebar"] .stFileUploader { margin-bottom: -0.2rem !important; }
 /* Make the Plotly chart fill full width and available height */
 [data-testid="stPlotlyChart"] { width: 100% !important; min-height: calc(100vh - 260px); }
 [data-testid="stPlotlyChart"] > div { width: 100% !important; height: 100% !important; }
 [data-testid="stPlotlyChart"] iframe { width: 100% !important; height: 100% !important; }
-div[data-testid="stMetric"] { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:0.5rem 0.7rem; }
+div[data-testid="stMetric"] { background: color-mix(in srgb, currentColor 6%, transparent); border:1px solid color-mix(in srgb, currentColor 12%, transparent); border-radius:8px; padding:0.5rem 0.7rem; }
 .stButton > button { border-radius:6px; font-size:0.82rem; font-weight:500; }
 .stButton > button[kind="primary"] { background:var(--accent); border:none; }
 .stButton > button:hover { opacity:0.88; }
@@ -233,19 +258,19 @@ _save_btn = False
 
 with st.sidebar:
     st.markdown("""
-    <div style='display:flex;align-items:center;gap:10px;padding:2px 0 6px 0'>
-        <svg width="30" height="30" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <div style='display:flex;align-items:center;gap:8px;padding:0 0 2px 0;margin-bottom:16px'>
+        <svg width="24" height="24" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
           <rect width="36" height="36" rx="8" fill="#1a6b55"/>
           <polyline points="4,18 10,18 14,8 18,28 22,14 26,18 32,18" stroke="white" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" fill="none"/>
         </svg>
         <div>
-            <div style='font-size:15px;font-weight:700;color:#111827;line-height:1.2'>SynCapture</div>
-            <div style='font-size:10px;color:#9ca3af'>Synaptic Event Analysis</div>
+            <div style='font-size:13px;font-weight:700;color:#111827;line-height:1.1'>SynCapture</div>
+            <div style='font-size:9px;color:#9ca3af'>Synaptic Event Analysis</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    uploaded = st.file_uploader('Upload ABF files', type=['abf'], accept_multiple_files=True)
+    uploaded = st.file_uploader('Upload ABF files', type=['abf'], accept_multiple_files=True, label_visibility='collapsed')
     if uploaded:
         for f in uploaded:
             if f.name not in S.files:
@@ -274,7 +299,6 @@ with st.sidebar:
                     st.error(f'{f.name}: {e}')
 
     if S.file_order:
-        st.divider()
         selectable = [n for n in S.file_order if n not in S.skipped]
         if selectable:
             default_ix = selectable.index(S.active) if S.active in selectable else 0
@@ -293,8 +317,7 @@ with st.sidebar:
         prev = S.settings.get(S.active, {})
         default_sweep = prev.get('sweep', sweeps_available[0])
 
-        st.divider()
-        st.markdown("**Sweep & Window**")
+        st.markdown("<p style='font-size:0.75rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Sweep & Window</p>", unsafe_allow_html=True)
         sweep = st.selectbox('Sweep', sweeps_available, index=sweeps_available.index(default_sweep) if default_sweep in sweeps_available else 0, key=f'sweep_{S.active}')
         sweep_df = df_all[df_all['sweep'] == sweep].copy()
         t_min, t_max = float(sweep_df['time_s'].min()), float(sweep_df['time_s'].max())
@@ -306,8 +329,7 @@ with st.sidebar:
             t_end = st.number_input('End (s)', min_value=0.0, max_value=t_max, value=float(prev.get('t_end', t_max)), step=0.1, key=f't_end_{S.active}')
         lp_hz = st.number_input('Low-pass (Hz)', min_value=0.0, value=float(prev.get('lp_hz', 1000.0)), step=50.0, help='0 = off', key=f'lp_hz_{S.active}')
 
-        st.divider()
-        st.markdown("**Detection**")
+        st.markdown("<p style='font-size:0.75rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Detection</p>", unsafe_allow_html=True)
         direction = st.selectbox('Direction', ['inward (EPSC)', 'outward (IPSC)'], index=['inward (EPSC)', 'outward (IPSC)'].index(prev.get('direction', 'inward (EPSC)')) if prev.get('direction', 'inward (EPSC)') in ['inward (EPSC)', 'outward (IPSC)'] else 0, key=f'direction_{S.active}')
         baseline_pct = st.slider('Baseline %', 5, 50, int(prev.get('baseline_pct', 20)), 5, key=f'bl_pct_{S.active}')
 
@@ -325,7 +347,7 @@ with st.sidebar:
 
         S.settings[S.active] = {'direction': direction, 'baseline_pct': baseline_pct, 'prominence': prominence, 'distance_ms': distance_ms, 'sweep': sweep, 't_start': t_start, 't_end': t_end, 'lp_hz': lp_hz}
 
-        st.divider()
+
         with st.expander('📋 Cell Labels', expanded=False):
             saved_rec = next((r for r in S.records if r.get('file_name') == S.active), {})
             cell_id = st.text_input('Cell ID', value=saved_rec.get('cell_id', Path(S.active).stem), key=f'cell_id_{S.active}')
@@ -424,20 +446,20 @@ else:
         all_ev = S.events[S.active].copy()
         win_ev = all_ev[(all_ev['time_s'] >= t_start) & (all_ev['time_s'] <= t_end)].copy()
         total_acc = int((all_ev['accepted'] == True).sum()) if 'accepted' in all_ev.columns else 0
-        st.caption(f'{len(win_ev)} events in window · {total_acc} accepted total')
-        edited = st.data_editor(
-            win_ev, num_rows='dynamic', use_container_width=True, key=f'ev_table_{S.active}',
-            column_config={
-                'accepted': st.column_config.CheckboxColumn('Accept'),
-                'time_s': st.column_config.NumberColumn('Time (s)', format='%.4f'),
-                'amplitude_pA': st.column_config.NumberColumn('Amplitude (pA)', format='%.2f'),
-                'prominence': st.column_config.NumberColumn('Prominence', format='%.2f'),
-                'iei_s': st.column_config.NumberColumn('IEI (s)', format='%.4f'),
-            },
-            height=260,
-        )
-        outside = all_ev[(all_ev['time_s'] < t_start) | (all_ev['time_s'] > t_end)]
-        S.events[S.active] = pd.concat([outside, edited], ignore_index=True).sort_values('time_s').reset_index(drop=True)
+        with st.expander(f'📋 {len(win_ev)} events in window · {total_acc} accepted total', expanded=False):
+            edited = st.data_editor(
+                win_ev, num_rows='dynamic', use_container_width=True, key=f'ev_table_{S.active}',
+                column_config={
+                    'accepted': st.column_config.CheckboxColumn('Accept'),
+                    'time_s': st.column_config.NumberColumn('Time (s)', format='%.4f'),
+                    'amplitude_pA': st.column_config.NumberColumn('Amplitude (pA)', format='%.2f'),
+                    'prominence': st.column_config.NumberColumn('Prominence', format='%.2f'),
+                    'iei_s': st.column_config.NumberColumn('IEI (s)', format='%.4f'),
+                },
+                height=260,
+            )
+            outside = all_ev[(all_ev['time_s'] < t_start) | (all_ev['time_s'] > t_end)]
+            S.events[S.active] = pd.concat([outside, edited], ignore_index=True).sort_values('time_s').reset_index(drop=True)
 
 # ───────────────────────────────────────────
 #  EXPORT SECTION
