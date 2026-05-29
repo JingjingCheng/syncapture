@@ -12,7 +12,8 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from scipy.signal import find_peaks, butter, filtfilt
+from scipy.signal import find_peaks, butter, filtfilt, fftconvolve
+from scipy.ndimage import gaussian_filter1d
 import streamlit as st
 import plotly.graph_objects as go
 
@@ -101,29 +102,76 @@ def abf_to_sweeps(abf):
         rows.append(pd.DataFrame({'sweep': sw, 'time_s': abf.sweepX.copy(), 'signal': abf.sweepY.copy()}))
     return pd.concat(rows, ignore_index=True)
 
-def butter_lowpass(data, cutoff_hz, fs_hz, order=4):
+def gaussian_lowpass(data, cutoff_hz, fs_hz):
+    """Applies a Gaussian filter converting the cutoff frequency to sigma."""
     nyq = 0.5 * fs_hz
     if cutoff_hz <= 0 or cutoff_hz >= nyq:
         return data
-    b, a = butter(order, cutoff_hz / nyq, btype='low')
-    return filtfilt(b, a, data)
+    # Calculate sigma in samples for a -3dB cutoff frequency
+    sigma_samples = (0.1325 * fs_hz) / cutoff_hz
+    return gaussian_filter1d(data, sigma=sigma_samples)
 
-def detect_synaptic_events(trace, time_s, direction, prominence, distance_ms, baseline_pct=20):
+def create_mepsc_template(tau_rise_ms=0.5, tau_decay_ms=3.0, fs_hz=10000, length_ms=20):
+    """Generates an idealized double-exponential mEPSC waveform."""
+    t = np.arange(0, length_ms, 1000/fs_hz)
+    template = (1 - np.exp(-t/tau_rise_ms)) * np.exp(-t/tau_decay_ms)
+    return template / np.max(template)
+
+def detect_synaptic_events(trace, time_s, direction, prominence, distance_ms, baseline_pct=20, tau_rise=0.5, tau_decay=3.0):
+    # Baseline subtraction
     n_base = max(1, int(len(trace) * baseline_pct / 100))
     baseline = np.median(trace[:n_base])
     y = trace - baseline
+
+    # Calculate sampling frequency
     dt = np.median(np.diff(time_s)) if len(time_s) > 1 else 0.0001
+    fs_hz = 1.0 / dt
+
+    # Generate reversed template for FFT cross-correlation
+    template = create_mepsc_template(tau_rise_ms=tau_rise, tau_decay_ms=tau_decay, fs_hz=fs_hz)
+
+    # NORMALIZE TEMPLATE SO AMPLITUDES REMAIN IN pA
+    # The sum of the template must be 1, otherwise cross-correlation multiplies the signal size
+    template_normalized = template / np.sum(template)
+    template_reversed = template_normalized[::-1] 
+
+    # Perform Deconvolution
+    deconvolved_trace = fftconvolve(y, template_reversed, mode='same')
+
+    # Invert signal if searching for inward currents
+    y_detect = -deconvolved_trace if direction == 'inward (EPSC)' else deconvolved_trace
+
+    # Find peaks on the deconvolved trace
     distance_pts = max(1, int((distance_ms / 1000) / dt))
-    y_detect = -y if direction == 'inward (EPSC)' else y
     idx, props = find_peaks(y_detect, prominence=prominence, distance=distance_pts)
+
     if len(idx) == 0:
         return pd.DataFrame(columns=['time_s', 'amplitude_pA', 'prominence', 'iei_s', 'accepted'])
-    peak_times = time_s[idx]
+
+    # SHIFT COMPENSATION
+    template_peak_idx = np.argmax(template_normalized)
+    shift_offset = (len(template_normalized) // 2) - template_peak_idx
+
+    corrected_idx = idx - shift_offset
+    corrected_idx = np.clip(corrected_idx, 0, len(time_s) - 1)
+
+    # Optional fine-tuning of the alignment
+    search_window = int(1.0 / 1000 / dt) # 1 ms window
+    for i in range(len(corrected_idx)):
+        win_start = max(0, corrected_idx[i] - search_window)
+        win_end = min(len(y), corrected_idx[i] + search_window)
+        if direction == 'inward (EPSC)':
+            corrected_idx[i] = win_start + np.argmin(y[win_start:win_end])
+        else:
+            corrected_idx[i] = win_start + np.argmax(y[win_start:win_end])
+
+    peak_times = time_s[corrected_idx]
     iei = np.diff(peak_times)
     iei = np.concatenate([[np.nan], iei])
+
     return pd.DataFrame({
         'time_s': peak_times,
-        'amplitude_pA': y[idx],
+        'amplitude_pA': y.iloc[corrected_idx] if isinstance(y, pd.Series) else y[corrected_idx],
         'prominence': props.get('prominences', np.full(len(idx), np.nan)),
         'iei_s': iei,
         'accepted': True,
@@ -327,7 +375,7 @@ with st.sidebar:
             t_start = st.number_input('Start (s)', min_value=0.0, max_value=t_max, value=float(prev.get('t_start', t_min)), step=0.1, key=f't_start_{S.active}')
         with sc2:
             t_end = st.number_input('End (s)', min_value=0.0, max_value=t_max, value=float(prev.get('t_end', t_max)), step=0.1, key=f't_end_{S.active}')
-        lp_hz = st.number_input('Low-pass (Hz)', min_value=0.0, value=float(prev.get('lp_hz', 1000.0)), step=50.0, help='0 = off', key=f'lp_hz_{S.active}')
+        lp_hz = st.number_input('Low-pass (Hz)', min_value=0.0, value=float(prev.get('lp_hz', 1000.0)), step=50.0, help='Gaussian filter, 0 = off', key=f'lp_hz_{S.active}')
 
         st.markdown("<p style='font-size:0.75rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Detection</p>", unsafe_allow_html=True)
         direction = st.selectbox('Direction', ['inward (EPSC)', 'outward (IPSC)'], index=['inward (EPSC)', 'outward (IPSC)'].index(prev.get('direction', 'inward (EPSC)')) if prev.get('direction', 'inward (EPSC)') in ['inward (EPSC)', 'outward (IPSC)'] else 0, key=f'direction_{S.active}')
@@ -336,8 +384,10 @@ with st.sidebar:
         pc1, pc2 = st.columns(2)
         with pc1:
             prominence = st.number_input('Prom. (pA)', min_value=0.5, value=float(prev.get('prominence', 8.0)), step=0.5, key=f'prom_{S.active}')
+            tau_rise = st.number_input('Tau Rise (ms)', min_value=0.1, value=float(prev.get('tau_rise', 0.5)), step=0.1, key=f'tau_rise_{S.active}')
         with pc2:
             distance_ms = st.number_input('Min IEI (ms)', min_value=0.1, value=float(prev.get('distance_ms', 5.0)), step=0.5, key=f'dist_{S.active}')
+            tau_decay = st.number_input('Tau Decay (ms)', min_value=0.5, value=float(prev.get('tau_decay', 3.0)), step=0.5, key=f'tau_decay_{S.active}')
 
         bc1, bc2 = st.columns(2)
         with bc1:
@@ -345,7 +395,7 @@ with st.sidebar:
         with bc2:
             _clear_win = st.button('🗑 Clear', key=f'clear_win_{S.active}', use_container_width=True)
 
-        S.settings[S.active] = {'direction': direction, 'baseline_pct': baseline_pct, 'prominence': prominence, 'distance_ms': distance_ms, 'sweep': sweep, 't_start': t_start, 't_end': t_end, 'lp_hz': lp_hz}
+        S.settings[S.active] = {'direction': direction, 'baseline_pct': baseline_pct, 'prominence': prominence, 'distance_ms': distance_ms, 'tau_rise': tau_rise, 'tau_decay': tau_decay, 'sweep': sweep, 't_start': t_start, 't_end': t_end, 'lp_hz': lp_hz}
 
 
         with st.expander('📋 Cell Labels', expanded=False):
@@ -397,13 +447,13 @@ else:
 
     sub = sweep_df[(sweep_df['time_s'] >= t_start) & (sweep_df['time_s'] <= t_end)].copy()
     if lp_hz > 0 and meta['sample_rate_hz'] > 0 and len(sub) > 20:
-        sub['signal'] = butter_lowpass(sub['signal'].to_numpy(), lp_hz, meta['sample_rate_hz'])
+        sub['signal'] = gaussian_lowpass(sub['signal'].to_numpy(), lp_hz, meta['sample_rate_hz'])
 
     current_events = S.events.get(S.active, pd.DataFrame(columns=['time_s','amplitude_pA','prominence','iei_s','accepted']))
 
     # ---- handle sidebar actions ----
     if _run_detect and not sub.empty:
-        new_ev = detect_synaptic_events(sub['signal'].to_numpy(), sub['time_s'].to_numpy(), direction, prominence, distance_ms, baseline_pct)
+        new_ev = detect_synaptic_events(sub['signal'].to_numpy(), sub['time_s'].to_numpy(), direction, prominence, distance_ms, baseline_pct, tau_rise, tau_decay)
         outside = current_events[(current_events['time_s'] < t_start) | (current_events['time_s'] > t_end)] if not current_events.empty else pd.DataFrame(columns=new_ev.columns)
         S.events[S.active] = pd.concat([outside, new_ev], ignore_index=True).sort_values('time_s').reset_index(drop=True)
         st.rerun()
@@ -557,7 +607,7 @@ if S.records:
                 sub_f = df_all2[(df_all2['sweep'] == sw) & (df_all2['time_s'] >= ts) & (df_all2['time_s'] <= te)].copy()
                 lp = sett.get('lp_hz', 0)
                 if lp > 0 and fdata_exp['meta']['sample_rate_hz'] > 0 and len(sub_f) > 20:
-                    sub_f['signal'] = butter_lowpass(sub_f['signal'].to_numpy(), lp, fdata_exp['meta']['sample_rate_hz'])
+                    sub_f['signal'] = gaussian_lowpass(sub_f['signal'].to_numpy(), lp, fdata_exp['meta']['sample_rate_hz'])
                 ev_f = S.events.get(fname, pd.DataFrame())
                 fig_f = make_trace_figure(sub_f, ev_f, sett, fname)
                 img_bytes[fname] = fig_to_png_bytes(fig_f)
