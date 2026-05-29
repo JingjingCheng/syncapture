@@ -4,7 +4,7 @@ SynCapture — Synaptic Event Analysis Tool
 Run: streamlit run syncapture.py
 Dependencies: pip install streamlit pyabf scipy pandas matplotlib numpy plotly
 """
-import io, json, zipfile, tempfile
+import io, json, shutil, zipfile, tempfile
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +15,8 @@ import matplotlib.pyplot as plt
 from scipy.signal import find_peaks, butter, filtfilt, fftconvolve
 from scipy.ndimage import gaussian_filter1d
 import streamlit as st
+import streamlit.components.v1 as components
+import plotly
 import plotly.graph_objects as go
 
 try:
@@ -76,7 +78,7 @@ div[data-testid="stMetric"] { background: color-mix(in srgb, currentColor 6%, tr
 def _init():
     defaults = {
         'files': {}, 'file_order': [], 'active': None, 'skipped': set(),
-        'events': {}, 'settings': {}, 'records': [],
+        'events': {}, 'settings': {}, 'records': [], 'custom_groups': [],
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -84,6 +86,214 @@ def _init():
 
 _init()
 S = st.session_state
+
+DEFAULT_GROUP_OPTIONS = ['naive', 'ovx', 'control', 'treatment', 'other']
+
+_PLOTLY_RELAYOUT_COMPONENT = None
+
+def _plotly_relayout_component_html():
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <script src="./plotly.min.js"></script>
+  <style>
+    html, body, #chart {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: white;
+    }
+  </style>
+</head>
+<body>
+  <div id="chart"></div>
+  <script>
+    const chart = document.getElementById("chart");
+    let relayoutAttached = false;
+    let lastPayload = "";
+    let currentFileName = null;
+    let currentFallbackRange = null;
+
+    function sendMessage(type, data) {
+      window.parent.postMessage(
+        Object.assign({ isStreamlitMessage: true, type: type }, data),
+        "*"
+      );
+    }
+
+    function setComponentReady() {
+      sendMessage("streamlit:componentReady", { apiVersion: 1 });
+    }
+
+    function setFrameHeight(height) {
+      sendMessage("streamlit:setFrameHeight", { height: height });
+    }
+
+    function setComponentValue(value) {
+      sendMessage("streamlit:setComponentValue", {
+        value: value,
+        dataType: "json",
+      });
+    }
+
+    function parseFigure(rawFigure) {
+      if (typeof rawFigure === "string") {
+        return JSON.parse(rawFigure);
+      }
+      return rawFigure || { data: [], layout: {} };
+    }
+
+    function numberOrNull(value) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    function extractYRange(eventData, fallbackRange) {
+      let yMin = numberOrNull(eventData["yaxis.range[0]"]);
+      let yMax = numberOrNull(eventData["yaxis.range[1]"]);
+
+      if ((yMin === null || yMax === null) && Array.isArray(eventData["yaxis.range"])) {
+        yMin = numberOrNull(eventData["yaxis.range"][0]);
+        yMax = numberOrNull(eventData["yaxis.range"][1]);
+      }
+
+      if ((yMin === null || yMax === null) && eventData["yaxis.autorange"] && Array.isArray(fallbackRange)) {
+        yMin = numberOrNull(fallbackRange[0]);
+        yMax = numberOrNull(fallbackRange[1]);
+      }
+
+      if (yMin === null || yMax === null || yMax <= yMin) {
+        return null;
+      }
+      return { y_min: yMin, y_max: yMax };
+    }
+
+    async function render(args) {
+      const height = Number(args.height || 620);
+      const figure = parseFigure(args.figure_json);
+      const layout = Object.assign({}, figure.layout || {}, {
+        height: height,
+        autosize: true,
+      });
+      const config = Object.assign({ responsive: true }, args.config || {});
+      const fallbackRange = layout.yaxis && layout.yaxis.range;
+      currentFileName = args.file_name;
+      currentFallbackRange = fallbackRange;
+
+      await Plotly.react(chart, figure.data || [], layout, config);
+      setFrameHeight(height);
+      Plotly.Plots.resize(chart);
+
+      if (!relayoutAttached) {
+        relayoutAttached = true;
+        chart.on("plotly_relayout", function(eventData) {
+          const liveRange = chart._fullLayout && chart._fullLayout.yaxis && chart._fullLayout.yaxis.range;
+          const range = extractYRange(eventData || {}, liveRange || currentFallbackRange);
+          if (!range) {
+            return;
+          }
+          const payload = {
+            file_name: currentFileName,
+            y_min: range.y_min,
+            y_max: range.y_max,
+            nonce: Date.now(),
+          };
+          const payloadKey = JSON.stringify({
+            file_name: payload.file_name,
+            y_min: payload.y_min,
+            y_max: payload.y_max,
+          });
+          if (payloadKey === lastPayload) {
+            return;
+          }
+          lastPayload = payloadKey;
+          setComponentValue(payload);
+        });
+      }
+    }
+
+    window.addEventListener("message", function(event) {
+      if (!event.data || event.data.type !== "streamlit:render") {
+        return;
+      }
+      render(event.data.args || {}).catch(function(error) {
+        setComponentValue({
+          error: error && error.message ? error.message : String(error),
+          nonce: Date.now(),
+        });
+      });
+    });
+
+    window.addEventListener("resize", function() {
+      Plotly.Plots.resize(chart);
+    });
+
+    setComponentReady();
+  </script>
+</body>
+</html>
+"""
+
+def _get_plotly_relayout_component():
+    global _PLOTLY_RELAYOUT_COMPONENT
+    if _PLOTLY_RELAYOUT_COMPONENT is not None:
+        return _PLOTLY_RELAYOUT_COMPONENT
+
+    component_dir = Path(tempfile.gettempdir()) / 'syncapture_plotly_relayout_component'
+    component_dir.mkdir(parents=True, exist_ok=True)
+    html_path = component_dir / 'index.html'
+    html = _plotly_relayout_component_html()
+    if not html_path.exists() or html_path.read_text(encoding='utf-8') != html:
+        html_path.write_text(html, encoding='utf-8')
+
+    plotly_js_src = Path(plotly.__file__).parent / 'package_data' / 'plotly.min.js'
+    plotly_js_dst = component_dir / 'plotly.min.js'
+    if not plotly_js_dst.exists() or plotly_js_dst.stat().st_size != plotly_js_src.stat().st_size:
+        shutil.copyfile(plotly_js_src, plotly_js_dst)
+
+    _PLOTLY_RELAYOUT_COMPONENT = components.declare_component(
+        'plotly_relayout_chart',
+        path=str(component_dir),
+    )
+    return _PLOTLY_RELAYOUT_COMPONENT
+
+def sync_plotly_y_range():
+    active = st.session_state.get('active')
+    if not active:
+        return
+    event = st.session_state.get(f'plotly_chart_{active}')
+    if not isinstance(event, dict):
+        return
+    if event.get('error'):
+        return
+    file_name = event.get('file_name') or active
+    y_min = event.get('y_min')
+    y_max = event.get('y_max')
+    if not is_valid_y_range(y_min, y_max):
+        return
+    settings = st.session_state.setdefault('settings', {})
+    settings.setdefault(file_name, {})
+    prev_min = settings[file_name].get('y_min')
+    prev_max = settings[file_name].get('y_max')
+    if prev_min == float(y_min) and prev_max == float(y_max):
+        return
+    reset_y_scale(file_name, y_min, y_max)
+
+def plotly_relayout_chart(fig, file_name, config, height=620):
+    component = _get_plotly_relayout_component()
+    return component(
+        figure_json=fig.to_json(),
+        file_name=file_name,
+        config=config,
+        height=height,
+        default=None,
+        key=f'plotly_chart_{file_name}',
+        on_change=sync_plotly_y_range,
+    )
 
 def load_abf(uploaded_file):
     if not HAS_PYABF:
@@ -156,7 +366,7 @@ def detect_synaptic_events(trace, time_s, direction, prominence, distance_ms, ba
     corrected_idx = np.clip(corrected_idx, 0, len(time_s) - 1)
 
     # Optional fine-tuning of the alignment
-    search_window = int(1.0 / 1000 / dt) # 1 ms window
+    search_window = max(1, int(1.0 / 1000 / dt)) # 1 ms window
     for i in range(len(corrected_idx)):
         win_start = max(0, corrected_idx[i] - search_window)
         win_end = min(len(y), corrected_idx[i] + search_window)
@@ -191,6 +401,63 @@ def summary_from_events(events_df, window_dur_s):
         'iei_mean_s': acc['iei_s'].mean() if n else np.nan,
     }
 
+def infer_y_range(values, pad_frac=0.05):
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return -1.0, 1.0
+    y_min = float(np.min(arr))
+    y_max = float(np.max(arr))
+    span = y_max - y_min
+    pad = max(span * pad_frac, 1e-6) if span > 0 else max(abs(y_min) * pad_frac, 1.0)
+    return y_min - pad, y_max + pad
+
+def is_valid_y_range(y_min, y_max):
+    try:
+        y_min = float(y_min)
+        y_max = float(y_max)
+    except (TypeError, ValueError):
+        return False
+    return np.isfinite(y_min) and np.isfinite(y_max) and y_max > y_min
+
+def reset_y_scale(file_name, y_min, y_max):
+    settings = st.session_state.setdefault('settings', {})
+    settings.setdefault(file_name, {})
+    settings[file_name]['y_min'] = float(y_min)
+    settings[file_name]['y_max'] = float(y_max)
+    st.session_state[f'y_min_{file_name}'] = float(y_min)
+    st.session_state[f'y_max_{file_name}'] = float(y_max)
+
+def normalize_group_name(group):
+    return group.strip() if isinstance(group, str) else ''
+
+def remember_group_option(group):
+    group = normalize_group_name(group)
+    if not group:
+        return ''
+    custom_groups = st.session_state.setdefault('custom_groups', [])
+    if group not in DEFAULT_GROUP_OPTIONS and group not in custom_groups:
+        custom_groups.append(group)
+    return group
+
+def group_options_for(saved_group=None, current_group=None):
+    options = list(DEFAULT_GROUP_OPTIONS)
+    for rec in st.session_state.get('records', []):
+        group = normalize_group_name(rec.get('group'))
+        if group and group not in options:
+            options.append(group)
+    for group in st.session_state.get('custom_groups', []):
+        group = normalize_group_name(group)
+        if group and group not in options:
+            options.append(group)
+    for group in (saved_group, current_group):
+        group = normalize_group_name(group)
+        if group and group not in options:
+            options.append(group)
+    return options
+
+sync_plotly_y_range()
+
 def make_trace_figure(sub, events_df, settings, file_name):
     direction = settings.get('direction', 'inward (EPSC)')
     marker_color = '#1a6b55' if 'EPSC' in direction else '#b91c1c'
@@ -217,6 +484,8 @@ def make_trace_figure(sub, events_df, settings, file_name):
             if not rej.empty:
                 ax.scatter(rej['time_s'], rej['amplitude_pA'] + baseline, s=18, color='#9ca3af', zorder=2, marker='x', label='rejected')
         ax.legend(fontsize=8, frameon=False, loc='upper right')
+        if is_valid_y_range(settings.get('y_min'), settings.get('y_max')):
+            ax.set_ylim(float(settings['y_min']), float(settings['y_max']))
     plt.tight_layout(pad=0.8)
     return fig
 
@@ -230,6 +499,8 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name):
     """Interactive Plotly figure with drag-zoom, box-select, scroll-zoom and double-click reset."""
     direction = settings.get('direction', 'inward (EPSC)')
     marker_color = '#1a6b55' if 'EPSC' in direction else '#b91c1c'
+    xaxis_revision = f"{file_name}:{settings.get('sweep')}:{settings.get('t_start')}:{settings.get('t_end')}"
+    yaxis_revision = f"{file_name}:{settings.get('y_min')}:{settings.get('y_max')}"
     fig = go.Figure()
     if not sub.empty:
         bl_end = sub['time_s'].min() + (sub['time_s'].max() - sub['time_s'].min()) * settings.get('baseline_pct', 20) / 100
@@ -270,11 +541,13 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name):
             title=dict(text='Time (s)', font=dict(size=11, color='#6b7280')),
             tickfont=dict(size=10, color='#6b7280'),
             showgrid=True, gridcolor='rgba(0,0,0,0.05)', zeroline=False,
+            uirevision=xaxis_revision,
         ),
         yaxis=dict(
             title=dict(text='Current (pA)', font=dict(size=11, color='#6b7280')),
             tickfont=dict(size=10, color='#6b7280'),
             showgrid=True, gridcolor='rgba(0,0,0,0.05)', zeroline=False,
+            uirevision=yaxis_revision,
         ),
         plot_bgcolor='white', paper_bgcolor='white',
         height=620,
@@ -287,7 +560,10 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name):
         dragmode='zoom',
         hovermode='x unified',
         modebar=dict(bgcolor='rgba(255,255,255,0.7)', color='#6b7280', activecolor='#1a6b55'),
+        uirevision=file_name,
     )
+    if is_valid_y_range(settings.get('y_min'), settings.get('y_max')):
+        fig.update_yaxes(range=[float(settings['y_min']), float(settings['y_max'])], autorange=False)
     return fig
 
 def lighten_hex(hex_color, frac):
@@ -351,6 +627,7 @@ with st.sidebar:
         if selectable:
             default_ix = selectable.index(S.active) if S.active in selectable else 0
             S.active = st.selectbox('📂 File', selectable, index=default_ix, key='file_select')
+            st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
             if st.button('⊘ Skip this file', use_container_width=True):
                 S.skipped.add(S.active)
                 remaining = [n for n in S.file_order if n not in S.skipped]
@@ -377,6 +654,43 @@ with st.sidebar:
             t_end = st.number_input('End (s)', min_value=0.0, max_value=t_max, value=float(prev.get('t_end', t_max)), step=0.1, key=f't_end_{S.active}')
         lp_hz = st.number_input('Low-pass (Hz)', min_value=0.0, value=float(prev.get('lp_hz', 1000.0)), step=50.0, help='Gaussian filter, 0 = off', key=f'lp_hz_{S.active}')
 
+        y_window_df = sweep_df[(sweep_df['time_s'] >= t_start) & (sweep_df['time_s'] <= t_end)].copy() if t_end > t_start else sweep_df.copy()
+        if y_window_df.empty:
+            y_window_df = sweep_df.copy()
+        y_values = y_window_df['signal'].to_numpy()
+        if lp_hz > 0 and meta['sample_rate_hz'] > 0 and len(y_values) > 20:
+            y_values = gaussian_lowpass(y_values, lp_hz, meta['sample_rate_hz'])
+        default_y_min, default_y_max = infer_y_range(y_values)
+        saved_y_min = prev.get('y_min', default_y_min)
+        saved_y_max = prev.get('y_max', default_y_max)
+        if not is_valid_y_range(saved_y_min, saved_y_max):
+            saved_y_min, saved_y_max = default_y_min, default_y_max
+        y_step = max((default_y_max - default_y_min) / 100, 0.001)
+        y_min_key = f'y_min_{S.active}'
+        y_max_key = f'y_max_{S.active}'
+        if y_min_key not in st.session_state:
+            st.session_state[y_min_key] = float(saved_y_min)
+        if y_max_key not in st.session_state:
+            st.session_state[y_max_key] = float(saved_y_max)
+
+        st.markdown("<p style='font-size:0.75rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Y Scale</p>", unsafe_allow_html=True)
+        yc1, yc2 = st.columns(2)
+        with yc1:
+            y_min = st.number_input('Y min (pA)', step=float(y_step), format='%.3f', key=y_min_key)
+        with yc2:
+            y_max = st.number_input('Y max (pA)', step=float(y_step), format='%.3f', key=y_max_key)
+        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
+        st.button(
+            'Reset Y to data',
+            key=f'reset_y_{S.active}',
+            use_container_width=True,
+            on_click=reset_y_scale,
+            args=(S.active, default_y_min, default_y_max),
+        )
+        if not is_valid_y_range(y_min, y_max):
+            st.warning('Y max must be greater than Y min.')
+            y_min, y_max = saved_y_min, saved_y_max
+
         st.markdown("<p style='font-size:0.75rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Detection</p>", unsafe_allow_html=True)
         direction = st.selectbox('Direction', ['inward (EPSC)', 'outward (IPSC)'], index=['inward (EPSC)', 'outward (IPSC)'].index(prev.get('direction', 'inward (EPSC)')) if prev.get('direction', 'inward (EPSC)') in ['inward (EPSC)', 'outward (IPSC)'] else 0, key=f'direction_{S.active}')
         baseline_pct = st.slider('Baseline %', 5, 50, int(prev.get('baseline_pct', 20)), 5, key=f'bl_pct_{S.active}')
@@ -389,29 +703,40 @@ with st.sidebar:
             distance_ms = st.number_input('Min IEI (ms)', min_value=0.1, value=float(prev.get('distance_ms', 5.0)), step=0.5, key=f'dist_{S.active}')
             tau_decay = st.number_input('Tau Decay (ms)', min_value=0.5, value=float(prev.get('tau_decay', 3.0)), step=0.5, key=f'tau_decay_{S.active}')
 
+        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
         bc1, bc2 = st.columns(2)
         with bc1:
             _run_detect = st.button('⚡ Detect', type='primary', key=f'detect_{S.active}', use_container_width=True)
         with bc2:
             _clear_win = st.button('🗑 Clear', key=f'clear_win_{S.active}', use_container_width=True)
 
-        S.settings[S.active] = {'direction': direction, 'baseline_pct': baseline_pct, 'prominence': prominence, 'distance_ms': distance_ms, 'tau_rise': tau_rise, 'tau_decay': tau_decay, 'sweep': sweep, 't_start': t_start, 't_end': t_end, 'lp_hz': lp_hz}
+        S.settings[S.active] = {'direction': direction, 'baseline_pct': baseline_pct, 'prominence': prominence, 'distance_ms': distance_ms, 'tau_rise': tau_rise, 'tau_decay': tau_decay, 'sweep': sweep, 't_start': t_start, 't_end': t_end, 'lp_hz': lp_hz, 'y_min': y_min, 'y_max': y_max}
 
-
-        with st.expander('📋 Cell Labels', expanded=False):
-            saved_rec = next((r for r in S.records if r.get('file_name') == S.active), {})
-            cell_id = st.text_input('Cell ID', value=saved_rec.get('cell_id', Path(S.active).stem), key=f'cell_id_{S.active}')
-            individual = st.text_input('Individual', value=saved_rec.get('individual', ''), key=f'individual_{S.active}')
-            lc1, lc2 = st.columns(2)
-            with lc1:
-                group_options = ['naive', 'ovx', 'control', 'treatment', 'other']
-                saved_group = saved_rec.get('group', 'naive')
-                group = st.selectbox('Group', group_options, index=group_options.index(saved_group) if saved_group in group_options else 0, key=f'group_{S.active}')
-            with lc2:
-                status_options = ['accepted', 'needs_check', 'rejected']
-                saved_status = saved_rec.get('status', 'accepted')
-                status = st.selectbox('Status', status_options, index=status_options.index(saved_status) if saved_status in status_options else 0, key=f'status_{S.active}')
-            _save_btn = st.button('✓ Save to dataset', type='primary', key=f'save_{S.active}', use_container_width=True)
+        st.markdown("<p style='font-size:0.88rem;font-weight:600;color:inherit;margin:0.5rem 0 0.45rem 0'>🏷️ Cell Labels</p>", unsafe_allow_html=True)
+        saved_rec = next((r for r in S.records if r.get('file_name') == S.active), {})
+        cell_id = st.text_input('Cell ID', value=saved_rec.get('cell_id', Path(S.active).stem), key=f'cell_id_{S.active}')
+        individual = st.text_input('Individual', value=saved_rec.get('individual', ''), key=f'individual_{S.active}')
+        lc1, lc2 = st.columns(2)
+        with lc1:
+            saved_group = saved_rec.get('group', 'naive')
+            group_key = f'group_{S.active}'
+            current_group = remember_group_option(st.session_state.get(group_key))
+            group_options = group_options_for(saved_group, current_group)
+            group = st.selectbox(
+                'Group',
+                group_options,
+                index=group_options.index(saved_group) if saved_group in group_options else 0,
+                key=group_key,
+                accept_new_options=True,
+                placeholder='Select or type a group',
+            )
+            group = remember_group_option(group) or 'naive'
+        with lc2:
+            status_options = ['accepted', 'needs_check', 'rejected']
+            saved_status = saved_rec.get('status', 'accepted')
+            status = st.selectbox('Status', status_options, index=status_options.index(saved_status) if saved_status in status_options else 0, key=f'status_{S.active}')
+        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
+        _save_btn = st.button('✓ Save to dataset', type='primary', key=f'save_{S.active}', use_container_width=True)
 
     if not HAS_PYABF:
         st.divider()
@@ -477,7 +802,11 @@ else:
     # ---- interactive trace chart ----
     win_events = current_events[(current_events['time_s'] >= t_start) & (current_events['time_s'] <= t_end)] if not current_events.empty else current_events
     fig_plotly = make_trace_figure_plotly(sub, win_events if not win_events.empty else None, S.settings[S.active], S.active)
-    st.plotly_chart(fig_plotly, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True, 'modeBarButtonsToAdd': ['drawrect', 'eraseshape']})
+    plotly_relayout_chart(
+        fig_plotly,
+        S.active,
+        config={'scrollZoom': True, 'displayModeBar': True, 'modeBarButtonsToAdd': ['drawrect', 'eraseshape']},
+    )
 
     # ---- metrics row ----
     full_ev = S.events.get(S.active, pd.DataFrame())
@@ -632,4 +961,3 @@ if S.records:
                 st.download_button('Prism: Frequency CSV', prism_freq.to_csv(index=False).encode(), file_name='Prism_frequency_Hz.csv', mime='text/csv')
             with exp3:
                 st.download_button('Per-cell summary CSV', df_rec.to_csv(index=False).encode(), file_name='per_cell_summary.csv', mime='text/csv')
-
