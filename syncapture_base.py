@@ -89,7 +89,7 @@ _init()
 S = st.session_state
 
 DEFAULT_GROUP_OPTIONS = ['naive', 'ovx', 'control', 'treatment', 'other']
-EVENT_COLUMNS = ['time_s', 'amplitude_pA', 'prominence', 'iei_s', 'accepted']
+EVENT_COLUMNS = ['time_s', 'amplitude_pA', 'prominence', 'iei_s', 'accepted', 'manual']
 
 _PLOTLY_RELAYOUT_COMPONENT = None
 
@@ -146,6 +146,9 @@ def _plotly_relayout_component_html():
     let currentFileName = null;
     let currentFallbackRange = null;
     let toastTimer = null;
+    let pointClickTimer = null;
+    let lastPlotMouseEvent = null;
+    let lastAddEventAt = 0;
 
     function sendMessage(type, data) {
       window.parent.postMessage(
@@ -244,6 +247,7 @@ def _plotly_relayout_component_html():
       return {
         event_index: eventIndex,
         accepted: accepted === null ? !(point.fullData && String(point.fullData.name || "").toLowerCase().includes("rejected")) : accepted,
+        manual: customdata ? boolOrNull(customdata[3]) === true : false,
         time_s: numberOrNull(point.x),
       };
     }
@@ -259,14 +263,84 @@ def _plotly_relayout_component_html():
       return null;
     }
 
-    function pointAction(meta, mouseEvent) {
-      if (mouseEvent && (mouseEvent.shiftKey || mouseEvent.altKey)) {
-        return "accept_event";
+    function plotCoordinates(mouseEvent) {
+      if (!mouseEvent || !chart._fullLayout) {
+        return null;
       }
-      if (mouseEvent && (mouseEvent.ctrlKey || mouseEvent.metaKey)) {
-        return "reject_event";
+      const xaxis = chart._fullLayout.xaxis;
+      const yaxis = chart._fullLayout.yaxis;
+      if (!xaxis || !yaxis || !Array.isArray(xaxis.range) || !Array.isArray(yaxis.range)) {
+        return null;
       }
-      return "toggle_event";
+      const chartRect = chart.getBoundingClientRect();
+      const size = chart._fullLayout._size || {};
+      const dragRect = chart.querySelector(".nsewdrag");
+      const plotRect = (
+        Number.isFinite(size.l) && Number.isFinite(size.t) &&
+        Number.isFinite(size.w) && Number.isFinite(size.h) &&
+        size.w > 0 && size.h > 0
+      ) ? {
+        left: chartRect.left + size.l,
+        top: chartRect.top + size.t,
+        width: size.w,
+        height: size.h,
+      } : (dragRect ? dragRect.getBoundingClientRect() : null);
+      if (!plotRect || !plotRect.width || !plotRect.height) {
+        return null;
+      }
+      const xPixel = mouseEvent.clientX - plotRect.left;
+      const yPixel = mouseEvent.clientY - plotRect.top;
+      if (xPixel < 0 || yPixel < 0 || xPixel > plotRect.width || yPixel > plotRect.height) {
+        return null;
+      }
+      const x0 = numberOrNull(xaxis.range[0]);
+      const x1 = numberOrNull(xaxis.range[1]);
+      const y0 = numberOrNull(yaxis.range[0]);
+      const y1 = numberOrNull(yaxis.range[1]);
+      if (x0 === null || x1 === null || y0 === null || y1 === null) {
+        return null;
+      }
+      return {
+        x: x0 + (xPixel / plotRect.width) * (x1 - x0),
+        y: y1 - (yPixel / plotRect.height) * (y1 - y0),
+      };
+    }
+
+    function rememberPlotMouseEvent(mouseEvent) {
+      const coords = plotCoordinates(mouseEvent);
+      if (!coords) {
+        return;
+      }
+      lastPlotMouseEvent = {
+        clientX: mouseEvent.clientX,
+        clientY: mouseEvent.clientY,
+      };
+    }
+
+    function addEventFromMouse(mouseEvent) {
+      const now = Date.now();
+      if (now - lastAddEventAt < 350) {
+        return;
+      }
+      const coords = plotCoordinates(mouseEvent || lastPlotMouseEvent);
+      if (!coords) {
+        showToast("Double-click inside plot");
+        return;
+      }
+      lastAddEventAt = now;
+      if (pointClickTimer) {
+        clearTimeout(pointClickTimer);
+        pointClickTimer = null;
+      }
+      setComponentValue({
+        kind: "event_action",
+        file_name: currentFileName,
+        action: "add_event",
+        time_s: coords.x,
+        current_pA: coords.y,
+        nonce: now,
+      });
+      showToast("Added");
     }
 
     function attachPlotHandlers() {
@@ -275,27 +349,50 @@ def _plotly_relayout_component_html():
       }
       plotHandlersAttached = true;
 
+      chart.addEventListener("mousedown", rememberPlotMouseEvent, true);
+      chart.addEventListener("click", rememberPlotMouseEvent, true);
+
       chart.on("plotly_click", function(eventData) {
         const match = firstEventPoint(eventData && eventData.points);
         if (!match) {
           return;
         }
         const mouseEvent = eventData.event || {};
-        const action = pointAction(match.meta, mouseEvent);
-        const payload = {
-          kind: "event_action",
-          file_name: currentFileName,
-          action: action,
-          event_index: match.meta.event_index,
-          time_s: match.meta.time_s,
-          nonce: Date.now(),
-        };
-        const willAccept = action === "accept_event" || (action === "toggle_event" && match.meta.accepted === false);
-        setComponentValue(payload);
-        showToast(willAccept ? "Restored" : "Rejected");
+        if (pointClickTimer) {
+          clearTimeout(pointClickTimer);
+        }
+        pointClickTimer = setTimeout(function() {
+          const payload = {
+            kind: "event_action",
+            file_name: currentFileName,
+            action: "toggle_event",
+            event_index: match.meta.event_index,
+            time_s: match.meta.time_s,
+            nonce: Date.now(),
+          };
+          const willAccept = match.meta.accepted === false;
+          setComponentValue(payload);
+          showToast(willAccept ? "Restored" : (match.meta.manual ? "Removed" : "Rejected"));
+          pointClickTimer = null;
+        }, 220);
         if (mouseEvent.preventDefault) {
           mouseEvent.preventDefault();
         }
+      });
+
+      chart.addEventListener("dblclick", function(mouseEvent) {
+        rememberPlotMouseEvent(mouseEvent);
+        addEventFromMouse(mouseEvent);
+        if (mouseEvent.preventDefault) {
+          mouseEvent.preventDefault();
+        }
+        if (mouseEvent.stopPropagation) {
+          mouseEvent.stopPropagation();
+        }
+      }, true);
+
+      chart.on("plotly_doubleclick", function(eventData) {
+        addEventFromMouse((eventData && eventData.event) || lastPlotMouseEvent);
       });
 
       chart.on("plotly_relayout", function(eventData) {
@@ -393,11 +490,26 @@ def normalize_events_frame(events_df):
     out = events_df.copy()
     for col in EVENT_COLUMNS:
         if col not in out.columns:
-            out[col] = True if col == 'accepted' else np.nan
+            if col == 'accepted':
+                out[col] = True
+            elif col == 'manual':
+                out[col] = False
+            else:
+                out[col] = np.nan
     for col in ['time_s', 'amplitude_pA', 'prominence', 'iei_s']:
         out[col] = pd.to_numeric(out[col], errors='coerce')
     out['accepted'] = out['accepted'].fillna(True).astype(bool)
+    out['manual'] = out['manual'].fillna(False).astype(bool)
     return out[EVENT_COLUMNS]
+
+def recompute_event_stats(events_df):
+    out = normalize_events_frame(events_df).sort_values('time_s').reset_index(drop=True)
+    if out.empty:
+        return out
+    out['iei_s'] = np.nan
+    acc_index = out.index[out['accepted'] == True]
+    out.loc[acc_index, 'iei_s'] = out.loc[acc_index, 'time_s'].diff()
+    return out
 
 def events_frame_changed(before, after):
     before = normalize_events_frame(before).reset_index(drop=True)
@@ -411,7 +523,10 @@ def events_frame_changed(before, after):
         right = after[col].to_numpy(dtype=float)
         if not np.allclose(left, right, equal_nan=True):
             return True
-    return not np.array_equal(before['accepted'].to_numpy(dtype=bool), after['accepted'].to_numpy(dtype=bool))
+    for col in ['accepted', 'manual']:
+        if not np.array_equal(before[col].to_numpy(dtype=bool), after[col].to_numpy(dtype=bool)):
+            return True
+    return False
 
 def bump_event_table_revision(file_name):
     revisions = st.session_state.setdefault('event_table_revisions', {})
@@ -426,6 +541,7 @@ def apply_event_table_delta(file_name, editor_key, source_key):
         return
     if not isinstance(all_events, pd.DataFrame):
         all_events = pd.DataFrame(columns=EVENT_COLUMNS)
+    all_events = normalize_events_frame(all_events)
 
     edited = normalize_events_frame(source)
     edited_rows = widget_state.get('edited_rows', {}) or {}
@@ -458,10 +574,12 @@ def apply_event_table_delta(file_name, editor_key, source_key):
         edited = pd.concat([edited, added], ignore_index=True)
 
     edited = normalize_events_frame(edited)
+    edited = edited[~((edited['manual'] == True) & (edited['accepted'] != True))]
     outside = all_events.drop(index=source.index, errors='ignore')
-    next_events = pd.concat([outside, edited], ignore_index=True).sort_values('time_s').reset_index(drop=True)
+    next_events = recompute_event_stats(pd.concat([outside, edited], ignore_index=True))
     if events_frame_changed(all_events, next_events):
         events_by_file[file_name] = next_events
+        bump_event_table_revision(file_name)
 
 def apply_chart_event_action(file_name, event_index, action):
     events_by_file = st.session_state.setdefault('events', {})
@@ -489,8 +607,20 @@ def apply_chart_event_action(file_name, event_index, action):
     if current == accepted:
         return {'changed': False, 'accepted': accepted}
 
+    if bool(events_df.at[event_index, 'manual']) and not accepted:
+        events_df = events_df.drop(index=event_index)
+        events_by_file[file_name] = recompute_event_stats(events_df)
+        bump_event_table_revision(file_name)
+        st.session_state['_last_chart_event_action'] = {
+            'file_name': file_name,
+            'event_index': event_index,
+            'accepted': False,
+            'removed': True,
+        }
+        return {'changed': True, 'accepted': False, 'removed': True}
+
     events_df.at[event_index, 'accepted'] = accepted
-    events_by_file[file_name] = events_df
+    events_by_file[file_name] = recompute_event_stats(events_df)
     bump_event_table_revision(file_name)
     st.session_state['_last_chart_event_action'] = {
         'file_name': file_name,
@@ -498,6 +628,60 @@ def apply_chart_event_action(file_name, event_index, action):
         'accepted': accepted,
     }
     return {'changed': True, 'accepted': accepted}
+
+def add_chart_event(file_name, time_s):
+    try:
+        time_s = float(time_s)
+    except (TypeError, ValueError):
+        return None
+
+    files = st.session_state.get('files', {})
+    fdata = files.get(file_name)
+    if not fdata:
+        return None
+    df_all = fdata.get('df')
+    if not isinstance(df_all, pd.DataFrame) or df_all.empty:
+        return None
+
+    settings = st.session_state.get('settings', {}).get(file_name, {})
+    sweeps = sorted(df_all['sweep'].unique().tolist())
+    sweep = settings.get('sweep', sweeps[0] if sweeps else None)
+    if sweep is None:
+        return None
+    t_start = float(settings.get('t_start', df_all['time_s'].min()))
+    t_end = float(settings.get('t_end', df_all['time_s'].max()))
+    sub = df_all[(df_all['sweep'] == sweep) & (df_all['time_s'] >= t_start) & (df_all['time_s'] <= t_end)].copy()
+    if sub.empty:
+        return None
+
+    signal = sub['signal'].to_numpy()
+    lp_hz = float(settings.get('lp_hz', 0) or 0)
+    sample_rate_hz = float(fdata.get('meta', {}).get('sample_rate_hz', 0) or 0)
+    if lp_hz > 0 and sample_rate_hz > 0 and len(signal) > 20:
+        signal = gaussian_lowpass(signal, lp_hz, sample_rate_hz)
+
+    times = sub['time_s'].to_numpy(dtype=float)
+    nearest_pos = int(np.argmin(np.abs(times - time_s)))
+    event_time = float(times[nearest_pos])
+    signal_at_event = float(signal[nearest_pos])
+    baseline_pct = float(settings.get('baseline_pct', 20) or 20)
+    nbase = max(1, int(len(signal) * baseline_pct / 100))
+    baseline = float(np.median(signal[:nbase]))
+    amplitude = signal_at_event - baseline
+
+    events_by_file = st.session_state.setdefault('events', {})
+    events_df = normalize_events_frame(events_by_file.get(file_name, pd.DataFrame(columns=EVENT_COLUMNS)))
+    new_event = pd.DataFrame([{
+        'time_s': event_time,
+        'amplitude_pA': amplitude,
+        'prominence': abs(amplitude),
+        'iei_s': np.nan,
+        'accepted': True,
+        'manual': True,
+    }])
+    events_by_file[file_name] = recompute_event_stats(pd.concat([events_df, new_event], ignore_index=True))
+    bump_event_table_revision(file_name)
+    return {'changed': True, 'time_s': event_time}
 
 def sync_plotly_chart_state():
     active = st.session_state.get('active')
@@ -521,7 +705,10 @@ def sync_plotly_chart_state():
         if processed.get(file_name) == action_key:
             return
         processed[file_name] = action_key
-        apply_chart_event_action(file_name, event.get('event_index'), event.get('action'))
+        if event.get('action') == 'add_event':
+            add_chart_event(file_name, event.get('time_s'))
+        else:
+            apply_chart_event_action(file_name, event.get('event_index'), event.get('action'))
         return
 
     y_min = event.get('y_min')
@@ -641,17 +828,23 @@ def detect_synaptic_events(trace, time_s, direction, prominence, distance_ms, ba
     })
 
 def summary_from_events(events_df, window_dur_s):
-    acc = events_df[events_df['accepted'] == True] if not events_df.empty else events_df
+    events_df = normalize_events_frame(events_df)
+    acc = events_df[events_df['accepted'] == True].sort_values('time_s') if not events_df.empty else events_df
     n = len(acc)
+    n_manual = int((acc['manual'] == True).sum()) if n else 0
+    n_detected = n - n_manual
     freq_hz = n / window_dur_s if window_dur_s > 0 else np.nan
     amp_abs = acc['amplitude_pA'].abs() if n else pd.Series(dtype=float)
+    iei = acc['time_s'].diff() if n else pd.Series(dtype=float)
     return {
         'n_events': n,
+        'n_detected_events': n_detected,
+        'n_manual_events': n_manual,
         'freq_hz': freq_hz,
         'amp_mean_pA': amp_abs.mean() if n else np.nan,
         'amp_median_pA': amp_abs.median() if n else np.nan,
         'amp_sd_pA': amp_abs.std(ddof=1) if n > 1 else np.nan,
-        'iei_mean_s': acc['iei_s'].mean() if n else np.nan,
+        'iei_mean_s': iei.mean() if n else np.nan,
     }
 
 def json_safe(value):
@@ -741,12 +934,17 @@ def make_trace_figure(sub, events_df, settings, file_name):
         ax.axvspan(sub['time_s'].min(), bl_end, color='#f3f4f6', alpha=0.5, label='baseline region', zorder=0)
         ax.plot(sub['time_s'], sub['signal'], lw=0.7, color='#374151', zorder=1)
         if events_df is not None and not events_df.empty:
+            events_df = normalize_events_frame(events_df)
             nbase = max(1, int(len(sub) * settings.get('baseline_pct', 20) / 100))
             baseline = np.median(sub['signal'].values[:nbase])
             acc = events_df[events_df['accepted'] == True]
-            rej = events_df[events_df['accepted'] != True]
-            if not acc.empty:
-                ax.scatter(acc['time_s'], acc['amplitude_pA'] + baseline, s=28, color=marker_color, zorder=3, label=f"{len(acc)} events")
+            detected_acc = acc[acc['manual'] != True]
+            manual_acc = acc[acc['manual'] == True]
+            rej = events_df[(events_df['accepted'] != True) & (events_df['manual'] != True)]
+            if not detected_acc.empty:
+                ax.scatter(detected_acc['time_s'], detected_acc['amplitude_pA'] + baseline, s=28, color=marker_color, zorder=3, label=f"{len(detected_acc)} detected")
+            if not manual_acc.empty:
+                ax.scatter(manual_acc['time_s'], manual_acc['amplitude_pA'] + baseline, s=34, color='#2563eb', zorder=4, marker='D', label=f"{len(manual_acc)} manual")
             if not rej.empty:
                 ax.scatter(rej['time_s'], rej['amplitude_pA'] + baseline, s=18, color='#9ca3af', zorder=2, marker='x', label=f"{len(rej)} rejected")
         ax.legend(fontsize=8, frameon=False, loc='upper right')
@@ -783,24 +981,39 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name):
             hovertemplate='Time: %{x:.4f}s<br>Current: %{y:.2f}pA<extra></extra>',
         ))
         if events_df is not None and not events_df.empty:
+            events_df = normalize_events_frame(events_df)
             nbase = max(1, int(len(sub) * settings.get('baseline_pct', 20) / 100))
             baseline = float(np.median(sub['signal'].values[:nbase]))
             acc = events_df[events_df['accepted'] == True]
-            rej = events_df[events_df['accepted'] != True]
-            if not acc.empty:
-                acc_custom = [[int(idx), 1, float(amp)] for idx, amp in zip(acc.index, acc['amplitude_pA'])]
-                acc_ids = [str(int(idx)) for idx in acc.index]
+            detected_acc = acc[acc['manual'] != True]
+            manual_acc = acc[acc['manual'] == True]
+            rej = events_df[(events_df['accepted'] != True) & (events_df['manual'] != True)]
+            if not detected_acc.empty:
+                acc_custom = [[int(idx), 1, float(row['amplitude_pA']), 0] for idx, row in detected_acc.iterrows()]
+                acc_ids = [str(int(idx)) for idx in detected_acc.index]
                 fig.add_trace(go.Scatter(
-                    x=acc['time_s'], y=acc['amplitude_pA'] + baseline,
+                    x=detected_acc['time_s'], y=detected_acc['amplitude_pA'] + baseline,
                     mode='markers',
                     marker=dict(color=marker_color, size=8, line=dict(color='white', width=0.8)),
                     ids=acc_ids,
                     customdata=acc_custom,
-                    name=f'{len(acc)} events',
+                    name=f'{len(detected_acc)} detected',
                     hovertemplate='Time: %{x:.4f}s<br>Amp: %{customdata[2]:.2f}pA<br>Click to reject<extra></extra>',
                 ))
+            if not manual_acc.empty:
+                manual_custom = [[int(idx), 1, float(row['amplitude_pA']), 1] for idx, row in manual_acc.iterrows()]
+                manual_ids = [str(int(idx)) for idx in manual_acc.index]
+                fig.add_trace(go.Scatter(
+                    x=manual_acc['time_s'], y=manual_acc['amplitude_pA'] + baseline,
+                    mode='markers',
+                    marker=dict(color='#2563eb', size=9, symbol='diamond', line=dict(color='white', width=0.8)),
+                    ids=manual_ids,
+                    customdata=manual_custom,
+                    name=f'{len(manual_acc)} manual',
+                    hovertemplate='Time: %{x:.4f}s<br>Amp: %{customdata[2]:.2f}pA<br>Click to remove<extra></extra>',
+                ))
             if not rej.empty:
-                rej_custom = [[int(idx), 0, float(amp)] for idx, amp in zip(rej.index, rej['amplitude_pA'])]
+                rej_custom = [[int(idx), 0, float(row['amplitude_pA']), int(bool(row['manual']))] for idx, row in rej.iterrows()]
                 rej_ids = [str(int(idx)) for idx in rej.index]
                 fig.add_trace(go.Scatter(
                     x=rej['time_s'], y=rej['amplitude_pA'] + baseline,
@@ -892,7 +1105,7 @@ with st.sidebar:
                     if f.name not in S.file_order:
                         S.file_order.append(f.name)
                     if f.name not in S.events:
-                        S.events[f.name] = pd.DataFrame(columns=['time_s','amplitude_pA','prominence','iei_s','accepted'])
+                        S.events[f.name] = pd.DataFrame(columns=EVENT_COLUMNS)
                     if f.name not in S.settings:
                         S.settings[f.name] = {}
                 except Exception as e:
@@ -1050,22 +1263,22 @@ else:
     if lp_hz > 0 and meta['sample_rate_hz'] > 0 and len(sub) > 20:
         sub['signal'] = gaussian_lowpass(sub['signal'].to_numpy(), lp_hz, meta['sample_rate_hz'])
 
-    current_events = S.events.get(S.active, pd.DataFrame(columns=['time_s','amplitude_pA','prominence','iei_s','accepted']))
+    current_events = normalize_events_frame(S.events.get(S.active, pd.DataFrame(columns=EVENT_COLUMNS)))
 
     # ---- handle sidebar actions ----
     if _run_detect and not sub.empty:
         new_ev = detect_synaptic_events(sub['signal'].to_numpy(), sub['time_s'].to_numpy(), direction, prominence, distance_ms, baseline_pct, tau_rise, tau_decay)
         outside = current_events[(current_events['time_s'] < t_start) | (current_events['time_s'] > t_end)] if not current_events.empty else pd.DataFrame(columns=new_ev.columns)
-        S.events[S.active] = pd.concat([outside, new_ev], ignore_index=True).sort_values('time_s').reset_index(drop=True)
+        S.events[S.active] = recompute_event_stats(pd.concat([outside, new_ev], ignore_index=True))
         bump_event_table_revision(S.active)
         st.rerun()
     if _clear_win:
         if not current_events.empty:
-            S.events[S.active] = current_events[(current_events['time_s'] < t_start) | (current_events['time_s'] > t_end)].reset_index(drop=True)
+            S.events[S.active] = recompute_event_stats(current_events[(current_events['time_s'] < t_start) | (current_events['time_s'] > t_end)])
             bump_event_table_revision(S.active)
         st.rerun()
     if _save_btn:
-        all_ev_s = S.events.get(S.active, pd.DataFrame())
+        all_ev_s = normalize_events_frame(S.events.get(S.active, pd.DataFrame(columns=EVENT_COLUMNS)))
         dur_s = max(0.001, t_end - t_start)
         sm_s = summary_from_events(all_ev_s[(all_ev_s['time_s'] >= t_start) & (all_ev_s['time_s'] <= t_end)] if not all_ev_s.empty else all_ev_s, dur_s)
         rec = {
@@ -1083,28 +1296,31 @@ else:
     plotly_relayout_chart(
         fig_plotly,
         S.active,
-        config={'scrollZoom': True, 'displayModeBar': True, 'modeBarButtonsToAdd': ['drawrect', 'eraseshape']},
+        config={'scrollZoom': True, 'displayModeBar': True, 'doubleClick': False, 'modeBarButtonsToAdd': ['drawrect', 'eraseshape']},
     )
 
     # ---- metrics row ----
     full_ev = S.events.get(S.active, pd.DataFrame())
     if not full_ev.empty:
+        full_ev = normalize_events_frame(full_ev)
         dur = max(0.001, t_end - t_start)
         window_full_ev = full_ev[(full_ev['time_s'] >= t_start) & (full_ev['time_s'] <= t_end)]
         sm = summary_from_events(window_full_ev, dur)
-        m1, m2, m3, m4, m5 = st.columns(5)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric('Events', sm['n_events'])
-        m2.metric('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—')
-        m3.metric('Mean |Amp|', f"{sm['amp_mean_pA']:.2f} pA" if pd.notna(sm['amp_mean_pA']) else '—')
-        m4.metric('Med |Amp|', f"{sm['amp_median_pA']:.2f} pA" if pd.notna(sm['amp_median_pA']) else '—')
-        m5.metric('Mean IEI', f"{sm['iei_mean_s']:.4f} s" if pd.notna(sm['iei_mean_s']) else '—')
+        m2.metric('Manual', sm['n_manual_events'])
+        m3.metric('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—')
+        m4.metric('Mean |Amp|', f"{sm['amp_mean_pA']:.2f} pA" if pd.notna(sm['amp_mean_pA']) else '—')
+        m5.metric('Med |Amp|', f"{sm['amp_median_pA']:.2f} pA" if pd.notna(sm['amp_median_pA']) else '—')
+        m6.metric('Mean IEI', f"{sm['iei_mean_s']:.4f} s" if pd.notna(sm['iei_mean_s']) else '—')
 
     # ---- editable event table ----
     if not S.events.get(S.active, pd.DataFrame()).empty:
-        all_ev = S.events[S.active].copy()
+        all_ev = normalize_events_frame(S.events[S.active])
         win_ev = all_ev[(all_ev['time_s'] >= t_start) & (all_ev['time_s'] <= t_end)].copy()
         total_acc = int((all_ev['accepted'] == True).sum()) if 'accepted' in all_ev.columns else 0
-        total_rej = int((all_ev['accepted'] != True).sum()) if 'accepted' in all_ev.columns else 0
+        total_manual = int(((all_ev['accepted'] == True) & (all_ev['manual'] == True)).sum()) if 'accepted' in all_ev.columns else 0
+        total_rej = int(((all_ev['accepted'] != True) & (all_ev['manual'] != True)).sum()) if 'accepted' in all_ev.columns else 0
         table_revision = S.event_table_revisions.get(S.active, 0)
         editor_key = f'ev_table_{S.active}_{table_revision}'
         editor_source_key = f'{editor_key}_source'
@@ -1114,7 +1330,7 @@ else:
             S[panel_key] = False
         panel_icon = '▾' if S[panel_key] else '▸'
         if st.button(
-            f'{panel_icon} 📋 {len(win_ev)} events in window · {total_acc} accepted · {total_rej} rejected total',
+            f'{panel_icon} 📋 {len(win_ev)} events in window · {total_acc} accepted · {total_manual} manual · {total_rej} rejected total',
             key=f'events_panel_toggle_{S.active}',
             use_container_width=True,
         ):
@@ -1123,6 +1339,7 @@ else:
             st.data_editor(
                 win_ev, num_rows='dynamic', use_container_width=True, key=editor_key,
                 column_config={
+                    'manual': None,
                     'accepted': st.column_config.CheckboxColumn('Accept'),
                     'time_s': st.column_config.NumberColumn('Time (s)', format='%.4f'),
                     'amplitude_pA': st.column_config.NumberColumn('Amplitude (pA)', format='%.2f'),
