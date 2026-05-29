@@ -79,6 +79,7 @@ def _init():
     defaults = {
         'files': {}, 'file_order': [], 'active': None, 'skipped': set(),
         'events': {}, 'settings': {}, 'records': [], 'custom_groups': [],
+        'event_table_revisions': {},
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -88,6 +89,7 @@ _init()
 S = st.session_state
 
 DEFAULT_GROUP_OPTIONS = ['naive', 'ovx', 'control', 'treatment', 'other']
+EVENT_COLUMNS = ['time_s', 'amplitude_pA', 'prominence', 'iei_s', 'accepted']
 
 _PLOTLY_RELAYOUT_COMPONENT = None
 
@@ -107,16 +109,43 @@ def _plotly_relayout_component_html():
       overflow: hidden;
       background: white;
     }
+    body {
+      position: relative;
+    }
+    #chart-toast {
+      position: absolute;
+      left: 14px;
+      bottom: 12px;
+      z-index: 10;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 140ms ease, transform 140ms ease;
+      border: 1px solid rgba(0,0,0,0.12);
+      border-radius: 6px;
+      background: rgba(255,255,255,0.94);
+      color: #374151;
+      font: 600 12px/1.2 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      padding: 7px 9px;
+      pointer-events: none;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+    }
+    #chart-toast.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
   </style>
 </head>
 <body>
   <div id="chart"></div>
+  <div id="chart-toast"></div>
   <script>
     const chart = document.getElementById("chart");
-    let relayoutAttached = false;
+    const chartToast = document.getElementById("chart-toast");
+    let plotHandlersAttached = false;
     let lastPayload = "";
     let currentFileName = null;
     let currentFallbackRange = null;
+    let toastTimer = null;
 
     function sendMessage(type, data) {
       window.parent.postMessage(
@@ -138,6 +167,17 @@ def _plotly_relayout_component_html():
         value: value,
         dataType: "json",
       });
+    }
+
+    function showToast(message) {
+      chartToast.textContent = message;
+      chartToast.classList.add("visible");
+      if (toastTimer) {
+        clearTimeout(toastTimer);
+      }
+      toastTimer = setTimeout(function() {
+        chartToast.classList.remove("visible");
+      }, 950);
     }
 
     function parseFigure(rawFigure) {
@@ -172,6 +212,118 @@ def _plotly_relayout_component_html():
       return { y_min: yMin, y_max: yMax };
     }
 
+    function boolOrNull(value) {
+      if (value === true || value === 1 || value === "1" || value === "true") {
+        return true;
+      }
+      if (value === false || value === 0 || value === "0" || value === "false") {
+        return false;
+      }
+      return null;
+    }
+
+    function pointMeta(point) {
+      if (!point) {
+        return null;
+      }
+      let customdata = Array.isArray(point.customdata) ? point.customdata : null;
+      if (!customdata && point.data && Array.isArray(point.data.customdata)) {
+        customdata = point.data.customdata[point.pointIndex];
+      }
+      let eventIndex = customdata ? Number(customdata[0]) : NaN;
+      if ((!Number.isInteger(eventIndex) || eventIndex < 0) && point.id !== undefined) {
+        eventIndex = Number(point.id);
+      }
+      if ((!Number.isInteger(eventIndex) || eventIndex < 0) && point.data && Array.isArray(point.data.ids)) {
+        eventIndex = Number(point.data.ids[point.pointIndex]);
+      }
+      if (!Number.isInteger(eventIndex) || eventIndex < 0) {
+        return null;
+      }
+      const accepted = customdata ? boolOrNull(customdata[1]) : null;
+      return {
+        event_index: eventIndex,
+        accepted: accepted === null ? !(point.fullData && String(point.fullData.name || "").toLowerCase().includes("rejected")) : accepted,
+        time_s: numberOrNull(point.x),
+      };
+    }
+
+    function firstEventPoint(points) {
+      const eventPoints = points || [];
+      for (let i = 0; i < eventPoints.length; i += 1) {
+        const meta = pointMeta(eventPoints[i]);
+        if (meta) {
+          return { point: eventPoints[i], meta: meta };
+        }
+      }
+      return null;
+    }
+
+    function pointAction(meta, mouseEvent) {
+      if (mouseEvent && (mouseEvent.shiftKey || mouseEvent.altKey)) {
+        return "accept_event";
+      }
+      if (mouseEvent && (mouseEvent.ctrlKey || mouseEvent.metaKey)) {
+        return "reject_event";
+      }
+      return "toggle_event";
+    }
+
+    function attachPlotHandlers() {
+      if (plotHandlersAttached) {
+        return;
+      }
+      plotHandlersAttached = true;
+
+      chart.on("plotly_click", function(eventData) {
+        const match = firstEventPoint(eventData && eventData.points);
+        if (!match) {
+          return;
+        }
+        const mouseEvent = eventData.event || {};
+        const action = pointAction(match.meta, mouseEvent);
+        const payload = {
+          kind: "event_action",
+          file_name: currentFileName,
+          action: action,
+          event_index: match.meta.event_index,
+          time_s: match.meta.time_s,
+          nonce: Date.now(),
+        };
+        const willAccept = action === "accept_event" || (action === "toggle_event" && match.meta.accepted === false);
+        setComponentValue(payload);
+        showToast(willAccept ? "Restored" : "Rejected");
+        if (mouseEvent.preventDefault) {
+          mouseEvent.preventDefault();
+        }
+      });
+
+      chart.on("plotly_relayout", function(eventData) {
+        const liveRange = chart._fullLayout && chart._fullLayout.yaxis && chart._fullLayout.yaxis.range;
+        const range = extractYRange(eventData || {}, liveRange || currentFallbackRange);
+        if (!range) {
+          return;
+        }
+        const payload = {
+          kind: "relayout",
+          file_name: currentFileName,
+          y_min: range.y_min,
+          y_max: range.y_max,
+          nonce: Date.now(),
+        };
+        const payloadKey = JSON.stringify({
+          file_name: payload.file_name,
+          y_min: payload.y_min,
+          y_max: payload.y_max,
+        });
+        if (payloadKey === lastPayload) {
+          return;
+        }
+        lastPayload = payloadKey;
+        setComponentValue(payload);
+      });
+    }
+
     async function render(args) {
       const height = Number(args.height || 620);
       const figure = parseFigure(args.figure_json);
@@ -187,33 +339,7 @@ def _plotly_relayout_component_html():
       await Plotly.react(chart, figure.data || [], layout, config);
       setFrameHeight(height);
       Plotly.Plots.resize(chart);
-
-      if (!relayoutAttached) {
-        relayoutAttached = true;
-        chart.on("plotly_relayout", function(eventData) {
-          const liveRange = chart._fullLayout && chart._fullLayout.yaxis && chart._fullLayout.yaxis.range;
-          const range = extractYRange(eventData || {}, liveRange || currentFallbackRange);
-          if (!range) {
-            return;
-          }
-          const payload = {
-            file_name: currentFileName,
-            y_min: range.y_min,
-            y_max: range.y_max,
-            nonce: Date.now(),
-          };
-          const payloadKey = JSON.stringify({
-            file_name: payload.file_name,
-            y_min: payload.y_min,
-            y_max: payload.y_max,
-          });
-          if (payloadKey === lastPayload) {
-            return;
-          }
-          lastPayload = payloadKey;
-          setComponentValue(payload);
-        });
-      }
+      attachPlotHandlers();
     }
 
     window.addEventListener("message", function(event) {
@@ -261,7 +387,119 @@ def _get_plotly_relayout_component():
     )
     return _PLOTLY_RELAYOUT_COMPONENT
 
-def sync_plotly_y_range():
+def normalize_events_frame(events_df):
+    if events_df is None or not isinstance(events_df, pd.DataFrame) or events_df.empty:
+        return pd.DataFrame(columns=EVENT_COLUMNS)
+    out = events_df.copy()
+    for col in EVENT_COLUMNS:
+        if col not in out.columns:
+            out[col] = True if col == 'accepted' else np.nan
+    for col in ['time_s', 'amplitude_pA', 'prominence', 'iei_s']:
+        out[col] = pd.to_numeric(out[col], errors='coerce')
+    out['accepted'] = out['accepted'].fillna(True).astype(bool)
+    return out[EVENT_COLUMNS]
+
+def events_frame_changed(before, after):
+    before = normalize_events_frame(before).reset_index(drop=True)
+    after = normalize_events_frame(after).reset_index(drop=True)
+    if len(before) != len(after):
+        return True
+    if len(before) == 0:
+        return False
+    for col in ['time_s', 'amplitude_pA', 'prominence', 'iei_s']:
+        left = before[col].to_numpy(dtype=float)
+        right = after[col].to_numpy(dtype=float)
+        if not np.allclose(left, right, equal_nan=True):
+            return True
+    return not np.array_equal(before['accepted'].to_numpy(dtype=bool), after['accepted'].to_numpy(dtype=bool))
+
+def bump_event_table_revision(file_name):
+    revisions = st.session_state.setdefault('event_table_revisions', {})
+    revisions[file_name] = int(revisions.get(file_name, 0)) + 1
+
+def apply_event_table_delta(file_name, editor_key, source_key):
+    widget_state = st.session_state.get(editor_key)
+    source = st.session_state.get(source_key)
+    events_by_file = st.session_state.setdefault('events', {})
+    all_events = events_by_file.get(file_name)
+    if not isinstance(widget_state, dict) or not isinstance(source, pd.DataFrame):
+        return
+    if not isinstance(all_events, pd.DataFrame):
+        all_events = pd.DataFrame(columns=EVENT_COLUMNS)
+
+    edited = normalize_events_frame(source)
+    edited_rows = widget_state.get('edited_rows', {}) or {}
+    for row_key, changes in edited_rows.items():
+        try:
+            row_pos = int(row_key)
+        except (TypeError, ValueError):
+            continue
+        if row_pos < 0 or row_pos >= len(edited):
+            continue
+        row_index = edited.index[row_pos]
+        for col, value in (changes or {}).items():
+            if col in EVENT_COLUMNS:
+                edited.at[row_index, col] = value
+
+    deleted_positions = []
+    for row_key in widget_state.get('deleted_rows', []) or []:
+        try:
+            row_pos = int(row_key)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= row_pos < len(edited):
+            deleted_positions.append(row_pos)
+    if deleted_positions:
+        edited = edited.drop(edited.index[deleted_positions])
+
+    added_rows = widget_state.get('added_rows', []) or []
+    if added_rows:
+        added = normalize_events_frame(pd.DataFrame(added_rows))
+        edited = pd.concat([edited, added], ignore_index=True)
+
+    edited = normalize_events_frame(edited)
+    outside = all_events.drop(index=source.index, errors='ignore')
+    next_events = pd.concat([outside, edited], ignore_index=True).sort_values('time_s').reset_index(drop=True)
+    if events_frame_changed(all_events, next_events):
+        events_by_file[file_name] = next_events
+
+def apply_chart_event_action(file_name, event_index, action):
+    events_by_file = st.session_state.setdefault('events', {})
+    events_df = events_by_file.get(file_name)
+    if not isinstance(events_df, pd.DataFrame) or events_df.empty:
+        return None
+    try:
+        event_index = int(event_index)
+    except (TypeError, ValueError):
+        return None
+    if event_index not in events_df.index:
+        return None
+
+    events_df = normalize_events_frame(events_df)
+    current = bool(events_df.at[event_index, 'accepted'])
+    if action == 'accept_event':
+        accepted = True
+    elif action == 'reject_event':
+        accepted = False
+    elif action == 'toggle_event':
+        accepted = not current
+    else:
+        return None
+
+    if current == accepted:
+        return {'changed': False, 'accepted': accepted}
+
+    events_df.at[event_index, 'accepted'] = accepted
+    events_by_file[file_name] = events_df
+    bump_event_table_revision(file_name)
+    st.session_state['_last_chart_event_action'] = {
+        'file_name': file_name,
+        'event_index': event_index,
+        'accepted': accepted,
+    }
+    return {'changed': True, 'accepted': accepted}
+
+def sync_plotly_chart_state():
     active = st.session_state.get('active')
     if not active:
         return
@@ -271,6 +509,21 @@ def sync_plotly_y_range():
     if event.get('error'):
         return
     file_name = event.get('file_name') or active
+
+    if event.get('kind') == 'event_action':
+        action_key = json.dumps({
+            'file_name': file_name,
+            'action': event.get('action'),
+            'event_index': event.get('event_index'),
+            'nonce': event.get('nonce'),
+        }, sort_keys=True)
+        processed = st.session_state.setdefault('_processed_plotly_actions', {})
+        if processed.get(file_name) == action_key:
+            return
+        processed[file_name] = action_key
+        apply_chart_event_action(file_name, event.get('event_index'), event.get('action'))
+        return
+
     y_min = event.get('y_min')
     y_max = event.get('y_max')
     if not is_valid_y_range(y_min, y_max):
@@ -292,7 +545,7 @@ def plotly_relayout_chart(fig, file_name, config, height=620):
         height=height,
         default=None,
         key=f'plotly_chart_{file_name}',
-        on_change=sync_plotly_y_range,
+        on_change=sync_plotly_chart_state,
     )
 
 def load_abf(uploaded_file):
@@ -401,6 +654,19 @@ def summary_from_events(events_df, window_dur_s):
         'iei_mean_s': acc['iei_s'].mean() if n else np.nan,
     }
 
+def json_safe(value):
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(v) for v in value]
+    if isinstance(value, np.generic):
+        return json_safe(value.item())
+    if value is pd.NA:
+        return None
+    if isinstance(value, float):
+        return value if np.isfinite(value) else None
+    return value
+
 def infer_y_range(values, pad_frac=0.05):
     arr = np.asarray(values, dtype=float)
     arr = arr[np.isfinite(arr)]
@@ -456,7 +722,7 @@ def group_options_for(saved_group=None, current_group=None):
             options.append(group)
     return options
 
-sync_plotly_y_range()
+sync_plotly_chart_state()
 
 def make_trace_figure(sub, events_df, settings, file_name):
     direction = settings.get('direction', 'inward (EPSC)')
@@ -482,7 +748,7 @@ def make_trace_figure(sub, events_df, settings, file_name):
             if not acc.empty:
                 ax.scatter(acc['time_s'], acc['amplitude_pA'] + baseline, s=28, color=marker_color, zorder=3, label=f"{len(acc)} events")
             if not rej.empty:
-                ax.scatter(rej['time_s'], rej['amplitude_pA'] + baseline, s=18, color='#9ca3af', zorder=2, marker='x', label='rejected')
+                ax.scatter(rej['time_s'], rej['amplitude_pA'] + baseline, s=18, color='#9ca3af', zorder=2, marker='x', label=f"{len(rej)} rejected")
         ax.legend(fontsize=8, frameon=False, loc='upper right')
         if is_valid_y_range(settings.get('y_min'), settings.get('y_max')):
             ax.set_ylim(float(settings['y_min']), float(settings['y_max']))
@@ -522,18 +788,28 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name):
             acc = events_df[events_df['accepted'] == True]
             rej = events_df[events_df['accepted'] != True]
             if not acc.empty:
+                acc_custom = [[int(idx), 1, float(amp)] for idx, amp in zip(acc.index, acc['amplitude_pA'])]
+                acc_ids = [str(int(idx)) for idx in acc.index]
                 fig.add_trace(go.Scatter(
                     x=acc['time_s'], y=acc['amplitude_pA'] + baseline,
-                    mode='markers', marker=dict(color=marker_color, size=7),
+                    mode='markers',
+                    marker=dict(color=marker_color, size=8, line=dict(color='white', width=0.8)),
+                    ids=acc_ids,
+                    customdata=acc_custom,
                     name=f'{len(acc)} events',
-                    hovertemplate='Time: %{x:.4f}s<br>Amp: %{y:.2f}pA<extra></extra>',
+                    hovertemplate='Time: %{x:.4f}s<br>Amp: %{customdata[2]:.2f}pA<br>Click to reject<extra></extra>',
                 ))
             if not rej.empty:
+                rej_custom = [[int(idx), 0, float(amp)] for idx, amp in zip(rej.index, rej['amplitude_pA'])]
+                rej_ids = [str(int(idx)) for idx in rej.index]
                 fig.add_trace(go.Scatter(
                     x=rej['time_s'], y=rej['amplitude_pA'] + baseline,
-                    mode='markers', marker=dict(color='#9ca3af', size=5, symbol='x'),
-                    name='rejected',
-                    hovertemplate='Time: %{x:.4f}s<br>Amp: %{y:.2f}pA<extra></extra>',
+                    mode='markers',
+                    marker=dict(color='#9ca3af', size=7, symbol='x', line=dict(width=1.5)),
+                    ids=rej_ids,
+                    customdata=rej_custom,
+                    name=f'{len(rej)} rejected',
+                    hovertemplate='Time: %{x:.4f}s<br>Amp: %{customdata[2]:.2f}pA<br>Click to restore<extra></extra>',
                 ))
     fig.update_layout(
         title=dict(text=file_name, font=dict(size=13, color='#1a1a1a')),
@@ -781,10 +1057,12 @@ else:
         new_ev = detect_synaptic_events(sub['signal'].to_numpy(), sub['time_s'].to_numpy(), direction, prominence, distance_ms, baseline_pct, tau_rise, tau_decay)
         outside = current_events[(current_events['time_s'] < t_start) | (current_events['time_s'] > t_end)] if not current_events.empty else pd.DataFrame(columns=new_ev.columns)
         S.events[S.active] = pd.concat([outside, new_ev], ignore_index=True).sort_values('time_s').reset_index(drop=True)
+        bump_event_table_revision(S.active)
         st.rerun()
     if _clear_win:
         if not current_events.empty:
             S.events[S.active] = current_events[(current_events['time_s'] < t_start) | (current_events['time_s'] > t_end)].reset_index(drop=True)
+            bump_event_table_revision(S.active)
         st.rerun()
     if _save_btn:
         all_ev_s = S.events.get(S.active, pd.DataFrame())
@@ -796,7 +1074,7 @@ else:
             **sm_s, 'lp_hz': lp_hz, 'direction': direction, 'sample_rate_hz': meta['sample_rate_hz'],
         }
         S.records = [r for r in S.records if r.get('file_name') != S.active]
-        S.records.append(rec)
+        S.records.append(json_safe(rec))
         st.toast(f'✓ Saved {cell_id} → dataset ({len(S.records)} files)')
 
     # ---- interactive trace chart ----
@@ -812,7 +1090,8 @@ else:
     full_ev = S.events.get(S.active, pd.DataFrame())
     if not full_ev.empty:
         dur = max(0.001, t_end - t_start)
-        sm = summary_from_events(full_ev[(full_ev['time_s'] >= t_start) & (full_ev['time_s'] <= t_end)], dur)
+        window_full_ev = full_ev[(full_ev['time_s'] >= t_start) & (full_ev['time_s'] <= t_end)]
+        sm = summary_from_events(window_full_ev, dur)
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric('Events', sm['n_events'])
         m2.metric('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—')
@@ -825,9 +1104,24 @@ else:
         all_ev = S.events[S.active].copy()
         win_ev = all_ev[(all_ev['time_s'] >= t_start) & (all_ev['time_s'] <= t_end)].copy()
         total_acc = int((all_ev['accepted'] == True).sum()) if 'accepted' in all_ev.columns else 0
-        with st.expander(f'📋 {len(win_ev)} events in window · {total_acc} accepted total', expanded=False):
-            edited = st.data_editor(
-                win_ev, num_rows='dynamic', use_container_width=True, key=f'ev_table_{S.active}',
+        total_rej = int((all_ev['accepted'] != True).sum()) if 'accepted' in all_ev.columns else 0
+        table_revision = S.event_table_revisions.get(S.active, 0)
+        editor_key = f'ev_table_{S.active}_{table_revision}'
+        editor_source_key = f'{editor_key}_source'
+        S[editor_source_key] = win_ev.copy()
+        panel_key = f'events_panel_open_{S.active}'
+        if panel_key not in S:
+            S[panel_key] = False
+        panel_icon = '▾' if S[panel_key] else '▸'
+        if st.button(
+            f'{panel_icon} 📋 {len(win_ev)} events in window · {total_acc} accepted · {total_rej} rejected total',
+            key=f'events_panel_toggle_{S.active}',
+            use_container_width=True,
+        ):
+            S[panel_key] = not S[panel_key]
+        if S[panel_key]:
+            st.data_editor(
+                win_ev, num_rows='dynamic', use_container_width=True, key=editor_key,
                 column_config={
                     'accepted': st.column_config.CheckboxColumn('Accept'),
                     'time_s': st.column_config.NumberColumn('Time (s)', format='%.4f'),
@@ -836,128 +1130,131 @@ else:
                     'iei_s': st.column_config.NumberColumn('IEI (s)', format='%.4f'),
                 },
                 height=260,
+                on_change=apply_event_table_delta,
+                args=(S.active, editor_key, editor_source_key),
             )
-            outside = all_ev[(all_ev['time_s'] < t_start) | (all_ev['time_s'] > t_end)]
-            S.events[S.active] = pd.concat([outside, edited], ignore_index=True).sort_values('time_s').reset_index(drop=True)
 
 # ───────────────────────────────────────────
 #  EXPORT SECTION
 # ───────────────────────────────────────────
 if S.records:
     st.divider()
-    with st.expander(f'📊 Summary & Export ({len(S.records)} files)', expanded=False):
-        df_rec = pd.DataFrame(S.records).sort_values(['group', 'individual', 'cell_id'])
-        st.dataframe(df_rec, use_container_width=True, height=200)
-        clean = df_rec[df_rec['status'] == 'accepted'].copy()
-        if not clean.empty:
-            def sem(s):
-                s = pd.Series(s).dropna()
-                return s.std(ddof=1) / np.sqrt(len(s)) if len(s) > 1 else np.nan
-            summary = clean.groupby('group').agg(
-                n_cells=('cell_id', 'count'),
-                amp_mean=('amp_mean_pA', 'mean'), amp_sem=('amp_mean_pA', sem),
-                freq_mean=('freq_hz', 'mean'), freq_sem=('freq_hz', sem),
-            ).reset_index()
-            fig_sum, axes = plt.subplots(1, 2, figsize=(9, 4))
-            fig_sum.patch.set_facecolor('white')
-            order = sorted(clean['group'].unique())
-            palette = {'naive': '#1a6b55', 'ovx': '#b91c1c', 'control': '#1d4ed8', 'treatment': '#b45309', 'other': '#6b7280'}
-            rng = np.random.default_rng(42)
-            panels = [('amp_mean_pA', 'Mean Amplitude (pA)', 'amp_mean', 'amp_sem'), ('freq_hz', 'Frequency (Hz)', 'freq_mean', 'freq_sem')]
-            for ax_i, (col, label, mean_col, sem_col) in enumerate(panels):
-                ax = axes[ax_i]
-                ax.set_facecolor('white')
-                ax.spines[['top', 'right']].set_visible(False)
-                ax.spines[['left', 'bottom']].set_color('#d1d5db')
-                ax.tick_params(colors='#6b7280', labelsize=9)
-                ax.set_ylabel(label, fontsize=9, color='#374151')
-                xs = np.arange(len(order))
-                for xi, g in enumerate(order):
-                    gdf = clean[clean['group'] == g]
-                    grp_color = palette.get(g, '#6b7280')
-                    inds = sorted([i for i in gdf['individual'].dropna().unique().tolist()])
-                    ind_shades = {}
-                    for ii, ind in enumerate(inds):
-                        frac = 0.35 + 0.5 * (ii / max(1, len(inds) - 1)) if len(inds) > 1 else 0.6
-                        ind_shades[ind] = lighten_hex(grp_color, frac)
-                    gm = summary[summary['group'] == g]
-                    mean_val = gm[mean_col].values[0] if not gm.empty else np.nan
-                    sem_val = gm[sem_col].values[0] if not gm.empty else np.nan
-                    ax.bar(xi, mean_val, yerr=sem_val, capsize=4, color=grp_color, alpha=0.55, edgecolor=grp_color, linewidth=1, width=0.55, error_kw={'linewidth': 1.5})
-                    if inds:
-                        for ind in inds:
-                            idf = gdf[gdf['individual'] == ind][col].dropna()
-                            j = rng.uniform(-0.1, 0.1, size=len(idf))
-                            ax.scatter(np.full(len(idf), xi) + j, idf.values, color=ind_shades[ind], s=30, zorder=4, edgecolors=grp_color, linewidths=0.6)
-                    else:
-                        vals = gdf[col].dropna()
-                        j = rng.uniform(-0.1, 0.1, size=len(vals))
-                        ax.scatter(np.full(len(vals), xi) + j, vals.values, color=lighten_hex(grp_color, 0.6), s=30, zorder=4, edgecolors=grp_color, linewidths=0.6)
-                ax.set_xticks(xs)
-                ax.set_xticklabels(order, fontsize=9)
-            plt.tight_layout(pad=1.2)
-            st.pyplot(fig_sum, clear_figure=True)
-            plt.close(fig_sum)
+    st.markdown(f'**📊 Summary & Export ({len(S.records)} files)**')
+    df_rec = pd.DataFrame(S.records).sort_values(['group', 'individual', 'cell_id'])
+    st.dataframe(df_rec, use_container_width=True, height=200)
+    clean = df_rec[df_rec['status'] == 'accepted'].copy()
+    if not clean.empty:
+        def sem(s):
+            s = pd.Series(s).dropna()
+            return s.std(ddof=1) / np.sqrt(len(s)) if len(s) > 1 else np.nan
 
-            all_groups = sorted(clean['group'].unique())
-            def prism_df(col):
-                max_len = int(clean.groupby('group')[col].count().max())
-                out = {}
-                for g in all_groups:
-                    vals = clean[clean['group'] == g][col].reset_index(drop=True)
-                    out[g] = vals.reindex(range(max_len))
-                return pd.DataFrame(out)
-            prism_amp = prism_df('amp_mean_pA')
-            prism_freq = prism_df('freq_hz')
+        summary = clean.groupby('group').agg(
+            n_cells=('cell_id', 'count'),
+            amp_mean=('amp_mean_pA', 'mean'), amp_sem=('amp_mean_pA', sem),
+            freq_mean=('freq_hz', 'mean'), freq_sem=('freq_hz', sem),
+        ).reset_index()
+        fig_sum, axes = plt.subplots(1, 2, figsize=(9, 4))
+        fig_sum.patch.set_facecolor('white')
+        order = sorted(clean['group'].unique())
+        palette = {'naive': '#1a6b55', 'ovx': '#b91c1c', 'control': '#1d4ed8', 'treatment': '#b45309', 'other': '#6b7280'}
+        rng = np.random.default_rng(42)
+        panels = [('amp_mean_pA', 'Mean Amplitude (pA)', 'amp_mean', 'amp_sem'), ('freq_hz', 'Frequency (Hz)', 'freq_mean', 'freq_sem')]
+        for ax_i, (col, label, mean_col, sem_col) in enumerate(panels):
+            ax = axes[ax_i]
+            ax.set_facecolor('white')
+            ax.spines[['top', 'right']].set_visible(False)
+            ax.spines[['left', 'bottom']].set_color('#d1d5db')
+            ax.tick_params(colors='#6b7280', labelsize=9)
+            ax.set_ylabel(label, fontsize=9, color='#374151')
+            xs = np.arange(len(order))
+            for xi, g in enumerate(order):
+                gdf = clean[clean['group'] == g]
+                grp_color = palette.get(g, '#6b7280')
+                inds = sorted([i for i in gdf['individual'].dropna().unique().tolist()])
+                ind_shades = {}
+                for ii, ind in enumerate(inds):
+                    frac = 0.35 + 0.5 * (ii / max(1, len(inds) - 1)) if len(inds) > 1 else 0.6
+                    ind_shades[ind] = lighten_hex(grp_color, frac)
+                gm = summary[summary['group'] == g]
+                mean_val = gm[mean_col].values[0] if not gm.empty else np.nan
+                sem_val = gm[sem_col].values[0] if not gm.empty else np.nan
+                ax.bar(xi, mean_val, yerr=sem_val, capsize=4, color=grp_color, alpha=0.55, edgecolor=grp_color, linewidth=1, width=0.55, error_kw={'linewidth': 1.5})
+                if inds:
+                    for ind in inds:
+                        idf = gdf[gdf['individual'] == ind][col].dropna()
+                        j = rng.uniform(-0.1, 0.1, size=len(idf))
+                        ax.scatter(np.full(len(idf), xi) + j, idf.values, color=ind_shades[ind], s=30, zorder=4, edgecolors=grp_color, linewidths=0.6)
+                else:
+                    vals = gdf[col].dropna()
+                    j = rng.uniform(-0.1, 0.1, size=len(vals))
+                    ax.scatter(np.full(len(vals), xi) + j, vals.values, color=lighten_hex(grp_color, 0.6), s=30, zorder=4, edgecolors=grp_color, linewidths=0.6)
+            ax.set_xticks(xs)
+            ax.set_xticklabels(order, fontsize=9)
+        plt.tight_layout(pad=1.2)
+        st.pyplot(fig_sum, clear_figure=True)
+        plt.close(fig_sum)
 
-            event_rows = []
-            for rec in S.records:
-                ev = S.events.get(rec['file_name'], pd.DataFrame())
-                if not ev.empty:
-                    ev = ev.copy()
-                    ev['file_name'] = rec['file_name']
-                    ev['cell_id'] = rec['cell_id']
-                    ev['group'] = rec['group']
-                    ev['individual'] = rec['individual']
-                    event_rows.append(ev)
-            events_all = pd.concat(event_rows, ignore_index=True) if event_rows else pd.DataFrame()
+        all_groups = sorted(clean['group'].unique())
 
-            img_bytes = {}
-            for rec in S.records:
-                fname = rec['file_name']
-                fdata_exp = S.files.get(fname)
-                if not fdata_exp:
-                    continue
-                df_all2 = fdata_exp['df']
-                sett = S.settings.get(fname, {})
-                sw = sett.get('sweep', df_all2['sweep'].iloc[0])
-                ts = sett.get('t_start', float(df_all2['time_s'].min()))
-                te = sett.get('t_end', float(df_all2['time_s'].max()))
-                sub_f = df_all2[(df_all2['sweep'] == sw) & (df_all2['time_s'] >= ts) & (df_all2['time_s'] <= te)].copy()
-                lp = sett.get('lp_hz', 0)
-                if lp > 0 and fdata_exp['meta']['sample_rate_hz'] > 0 and len(sub_f) > 20:
-                    sub_f['signal'] = gaussian_lowpass(sub_f['signal'].to_numpy(), lp, fdata_exp['meta']['sample_rate_hz'])
-                ev_f = S.events.get(fname, pd.DataFrame())
-                fig_f = make_trace_figure(sub_f, ev_f, sett, fname)
-                img_bytes[fname] = fig_to_png_bytes(fig_f)
-                plt.close(fig_f)
+        def prism_df(col):
+            max_len = int(clean.groupby('group')[col].count().max())
+            out = {}
+            for g in all_groups:
+                vals = clean[clean['group'] == g][col].reset_index(drop=True)
+                out[g] = vals.reindex(range(max_len))
+            return pd.DataFrame(out)
 
-            zbuf = io.BytesIO()
-            with zipfile.ZipFile(zbuf, 'w', zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr('per_cell_summary.csv', df_rec.to_csv(index=False))
-                zf.writestr('group_mean_sem.csv', summary.to_csv(index=False))
-                zf.writestr('Prism_amplitude_pA.csv', prism_amp.to_csv(index=False))
-                zf.writestr('Prism_frequency_Hz.csv', prism_freq.to_csv(index=False))
-                if not events_all.empty:
-                    zf.writestr('all_events.csv', events_all.to_csv(index=False))
-                for fname, ibytes in img_bytes.items():
-                    zf.writestr(f'traces/{Path(fname).stem}_detected.png', ibytes)
-                zf.writestr('review_state.json', json.dumps(S.records, indent=2))
-            st.download_button('⬇ Download all exports (ZIP)', data=zbuf.getvalue(), file_name='syncapture_exports.zip', mime='application/zip', type='primary')
-            exp1, exp2, exp3 = st.columns(3)
-            with exp1:
-                st.download_button('Prism: Amplitude CSV', prism_amp.to_csv(index=False).encode(), file_name='Prism_amplitude_pA.csv', mime='text/csv')
-            with exp2:
-                st.download_button('Prism: Frequency CSV', prism_freq.to_csv(index=False).encode(), file_name='Prism_frequency_Hz.csv', mime='text/csv')
-            with exp3:
-                st.download_button('Per-cell summary CSV', df_rec.to_csv(index=False).encode(), file_name='per_cell_summary.csv', mime='text/csv')
+        prism_amp = prism_df('amp_mean_pA')
+        prism_freq = prism_df('freq_hz')
+
+        event_rows = []
+        for rec in S.records:
+            ev = S.events.get(rec['file_name'], pd.DataFrame())
+            if not ev.empty:
+                ev = ev.copy()
+                ev['file_name'] = rec['file_name']
+                ev['cell_id'] = rec['cell_id']
+                ev['group'] = rec['group']
+                ev['individual'] = rec['individual']
+                event_rows.append(ev)
+        events_all = pd.concat(event_rows, ignore_index=True) if event_rows else pd.DataFrame()
+
+        img_bytes = {}
+        for rec in S.records:
+            fname = rec['file_name']
+            fdata_exp = S.files.get(fname)
+            if not fdata_exp:
+                continue
+            df_all2 = fdata_exp['df']
+            sett = S.settings.get(fname, {})
+            sw = sett.get('sweep', df_all2['sweep'].iloc[0])
+            ts = sett.get('t_start', float(df_all2['time_s'].min()))
+            te = sett.get('t_end', float(df_all2['time_s'].max()))
+            sub_f = df_all2[(df_all2['sweep'] == sw) & (df_all2['time_s'] >= ts) & (df_all2['time_s'] <= te)].copy()
+            lp = sett.get('lp_hz', 0)
+            if lp > 0 and fdata_exp['meta']['sample_rate_hz'] > 0 and len(sub_f) > 20:
+                sub_f['signal'] = gaussian_lowpass(sub_f['signal'].to_numpy(), lp, fdata_exp['meta']['sample_rate_hz'])
+            ev_f = S.events.get(fname, pd.DataFrame())
+            fig_f = make_trace_figure(sub_f, ev_f, sett, fname)
+            img_bytes[fname] = fig_to_png_bytes(fig_f)
+            plt.close(fig_f)
+
+        zbuf = io.BytesIO()
+        with zipfile.ZipFile(zbuf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('per_cell_summary.csv', df_rec.to_csv(index=False))
+            zf.writestr('group_mean_sem.csv', summary.to_csv(index=False))
+            zf.writestr('Prism_amplitude_pA.csv', prism_amp.to_csv(index=False))
+            zf.writestr('Prism_frequency_Hz.csv', prism_freq.to_csv(index=False))
+            if not events_all.empty:
+                zf.writestr('all_events.csv', events_all.to_csv(index=False))
+            for fname, ibytes in img_bytes.items():
+                zf.writestr(f'traces/{Path(fname).stem}_detected.png', ibytes)
+            zf.writestr('review_state.json', json.dumps(json_safe(S.records), indent=2))
+        st.download_button('⬇ Download all exports (ZIP)', data=zbuf.getvalue(), file_name='syncapture_exports.zip', mime='application/zip', type='primary')
+        exp1, exp2, exp3 = st.columns(3)
+        with exp1:
+            st.download_button('Prism: Amplitude CSV', prism_amp.to_csv(index=False).encode(), file_name='Prism_amplitude_pA.csv', mime='text/csv')
+        with exp2:
+            st.download_button('Prism: Frequency CSV', prism_freq.to_csv(index=False).encode(), file_name='Prism_frequency_Hz.csv', mime='text/csv')
+        with exp3:
+            st.download_button('Per-cell summary CSV', df_rec.to_csv(index=False).encode(), file_name='per_cell_summary.csv', mime='text/csv')
