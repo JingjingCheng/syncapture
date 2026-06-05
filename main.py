@@ -4,7 +4,7 @@ SynCapture — Synaptic Event Analysis Tool
 Run: streamlit run syncapture.py
 Dependencies: pip install streamlit pyabf scipy pandas matplotlib numpy plotly
 """
-import io, json, shutil, zipfile, tempfile
+import hashlib, io, json, shutil, zipfile, tempfile
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +12,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from scipy.signal import find_peaks, butter, filtfilt, fftconvolve
 from scipy.ndimage import gaussian_filter1d
 import streamlit as st
@@ -32,14 +33,14 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300..700&display=swap');
 html, body, [class*="css"] { font-family: 'Inter', sans-serif !important; }
 :root {
-  --bg:#ffffff; --surface:#f8f9fa; --border:rgba(0,0,0,0.08); --accent:#1a6b55;
-  --accent-l:#eaf2ef; --text:#1a1a1a; --muted:#6b7280;
+  --accent:#1a6b55;
+  --accent-l:#eaf2ef;
 }
 header[data-testid="stHeader"] { display: none !important; height: 0 !important; }
 [data-testid="stAppViewContainer"] { top: 0 !important; margin-top: 0 !important; }
 [data-testid="stMain"] > .block-container,
 [data-testid="stMainBlockContainer"] { padding: 0.5rem 1.5rem 1rem 1.5rem !important; margin-top: 0 !important; max-width: 100% !important; }
-section[data-testid="stSidebar"] { min-width: 300px !important; max-width: 320px !important; }
+section[data-testid="stSidebar"] { min-width: 292px !important; max-width: 312px !important; }
 section[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] { padding: 0; }
 section[data-testid="stSidebar"] .block-container { padding-top: 0 !important; padding-bottom: 0.3rem !important; }
 section[data-testid="stSidebar"] > div { padding-top: 0 !important; }
@@ -61,14 +62,200 @@ section[data-testid="stSidebar"] .stNumberInput,
 section[data-testid="stSidebar"] .stSlider,
 section[data-testid="stSidebar"] .stTextInput { margin-bottom: -0.3rem !important; }
 section[data-testid="stSidebar"] [data-testid="stExpander"] { margin-top: 0 !important; margin-bottom: 0 !important; }
-section[data-testid="stSidebar"] [data-testid="stExpander"] details { padding: 0 !important; }
-/* Compact file uploader: just reduce extra padding */
+section[data-testid="stSidebar"] [data-testid="stExpander"] details {
+  padding: 0 !important;
+}
+/* Compact controls */
 section[data-testid="stSidebar"] .stFileUploader { margin-bottom: -0.2rem !important; }
+section[data-testid="stSidebar"] .stFileUploader [data-testid="stFileUploaderDropzone"] {
+  min-height: 2.15rem !important;
+  padding: 0.22rem 0.35rem !important;
+  border-style: solid !important;
+}
+section[data-testid="stSidebar"] .stFileUploader [data-testid="stFileUploaderDropzone"] button {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+}
+section[data-testid="stSidebar"] .stFileUploader [data-testid="stFileUploaderDropzone"] button * {
+  background: transparent !important;
+  color: #ffffff !important;
+}
+section[data-testid="stSidebar"] .stFileUploader [data-testid="stFileUploaderDropzone"] > div:first-child {
+  display: none !important;
+}
+section[data-testid="stSidebar"] .stFileUploader [data-testid="stFileUploaderDropzone"] small {
+  display: none !important;
+}
+section[data-testid="stSidebar"] .stNumberInput input,
+section[data-testid="stSidebar"] .stTextInput input {
+  min-height: 2.38rem !important;
+  height: 2.38rem !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  font-size: 0.84rem !important;
+  line-height: 1.25 !important;
+}
+section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div {
+  min-height: 2.55rem !important;
+  height: 2.55rem !important;
+  align-items: center !important;
+  font-size: 0.84rem !important;
+  line-height: 1.25 !important;
+}
+section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div > div {
+  min-height: 2.55rem !important;
+  align-items: center !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  overflow: visible !important;
+}
+section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] span,
+section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] p {
+  line-height: 1.25 !important;
+}
+section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] {
+  width: 100% !important;
+}
+div[data-baseweb="popover"] [role="listbox"] {
+  min-width: 320px !important;
+}
+section[data-testid="stSidebar"] .stSlider [data-testid="stThumbValue"] {
+  font-size: 0.68rem !important;
+}
+section[data-testid="stSidebar"] .stButton > button {
+  min-height: 1.85rem !important;
+  padding: 0.2rem 0.45rem !important;
+}
+section[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #ffffff !important;
+}
+section[data-testid="stSidebar"] .stFileUploader button[data-testid="stBaseButton-secondary"] {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+}
+section[data-testid="stSidebar"] .stFileUploader button[data-testid="stBaseButton-secondary"] * {
+  color: #ffffff !important;
+}
 /* Make the Plotly chart fill full width and available height */
-[data-testid="stPlotlyChart"] { width: 100% !important; min-height: calc(100vh - 260px); }
+[data-testid="stPlotlyChart"] { width: 100% !important; min-height: 0 !important; }
 [data-testid="stPlotlyChart"] > div { width: 100% !important; height: 100% !important; }
 [data-testid="stPlotlyChart"] iframe { width: 100% !important; height: 100% !important; }
-div[data-testid="stMetric"] { background: color-mix(in srgb, currentColor 6%, transparent); border:1px solid color-mix(in srgb, currentColor 12%, transparent); border-radius:8px; padding:0.5rem 0.7rem; }
+div[data-testid="stMetric"] {
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  border:1px solid color-mix(in srgb, currentColor 10%, transparent);
+  border-radius:6px;
+  padding:0.22rem 0.32rem;
+  min-height: 2.35rem;
+  overflow: hidden;
+}
+div[data-testid="stMetric"] label {
+  font-size:0.58rem !important;
+  line-height:1 !important;
+  white-space: nowrap !important;
+}
+div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+  font-size:0.78rem !important;
+  line-height:1.05 !important;
+  white-space: nowrap !important;
+}
+.metric-inline-row {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.45rem;
+  margin: 0.35rem 0 0.45rem 0;
+}
+.metric-inline-card {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-width: 0;
+  min-height: 2.05rem;
+  padding: 0.28rem 0.42rem;
+  overflow: hidden;
+  white-space: nowrap;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  border-radius: 6px;
+}
+.metric-inline-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: color-mix(in srgb, currentColor 65%, transparent);
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1;
+}
+.metric-inline-value {
+  flex: 0 0 auto;
+  color: inherit;
+  font-size: 0.74rem;
+  font-weight: 600;
+  line-height: 1;
+}
+.compact-panel [data-testid="stVerticalBlock"] { gap: 0.35rem !important; }
+.compact-panel .stDataFrame, .compact-panel [data-testid="stDataFrame"] { font-size: 0.78rem !important; }
+.style-section-title {
+  margin: 0.45rem 0 0.6rem 0;
+  padding-top: 0.32rem;
+  border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  color: color-mix(in srgb, currentColor 65%, transparent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+.style-subsection-title {
+  margin: 0.18rem 0 0.18rem 0;
+  color: color-mix(in srgb, currentColor 78%, transparent);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+[data-testid="stMain"] [data-testid="stExpander"] [data-testid="stVerticalBlock"] {
+  gap: 0.34rem !important;
+}
+[data-testid="stMain"] [data-testid="stExpander"] label p {
+  color: color-mix(in srgb, currentColor 65%, transparent) !important;
+  font-size: 0.72rem !important;
+  font-weight: 600 !important;
+  line-height: 1.08 !important;
+  margin-bottom: 0.06rem !important;
+}
+[data-testid="stMain"] [data-testid="stExpander"] .stNumberInput input {
+  min-height: 2.08rem !important;
+  height: 2.08rem !important;
+  padding: 0.12rem 0.42rem !important;
+  font-size: 0.78rem !important;
+}
+[data-testid="stMain"] [data-testid="stExpander"] .stSelectbox [data-baseweb="select"] > div {
+  min-height: 2.08rem !important;
+  height: 2.08rem !important;
+  font-size: 0.78rem !important;
+}
+[data-testid="stMain"] [data-testid="stExpander"] .stCheckbox {
+  min-height: 2.08rem !important;
+  display: flex !important;
+  align-items: end !important;
+}
+[data-testid="stMain"] [data-testid="stExpander"] .stSlider {
+  padding-top: 0 !important;
+  margin-bottom: -0.2rem !important;
+}
+[data-testid="stMain"] .stDownloadButton > button {
+  min-height: 2.2rem !important;
+  padding: 0.34rem 0.72rem !important;
+  border-radius: 6px !important;
+  font-size: 0.82rem !important;
+  font-weight: 650 !important;
+  white-space: nowrap !important;
+}
+[data-testid="stMain"] .stDownloadButton {
+  margin-bottom: 0 !important;
+}
 .stButton > button { border-radius:6px; font-size:0.82rem; font-weight:500; }
 .stButton > button[kind="primary"] { background:var(--accent); border:none; }
 .stButton > button:hover { opacity:0.88; }
@@ -79,7 +266,8 @@ def _init():
     defaults = {
         'files': {}, 'file_order': [], 'active': None, 'skipped': set(),
         'events': {}, 'settings': {}, 'records': [], 'custom_groups': [],
-        'event_table_revisions': {},
+        'event_table_revisions': {}, 'figure_style': {}, 'group_colors': {},
+        'show_uploader': not bool(st.session_state.get('file_order', [])),
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -90,6 +278,41 @@ S = st.session_state
 
 DEFAULT_GROUP_OPTIONS = ['naive', 'ovx', 'control', 'treatment', 'other']
 EVENT_COLUMNS = ['time_s', 'amplitude_pA', 'prominence', 'iei_s', 'accepted', 'manual']
+DEFAULT_GROUP_PALETTE = {
+    'naive': '#1a6b55',
+    'ovx': '#b91c1c',
+    'control': '#1d4ed8',
+    'treatment': '#b45309',
+    'other': '#6b7280',
+}
+DEFAULT_FIGURE_STYLE = {
+    'font_family': 'Arial',
+    'font_size': 10,
+    'axis_label_size': 11,
+    'tick_label_size': 9,
+    'axis_color': '#111827',
+    'tick_color': '#374151',
+    'grid_color': '#e5e7eb',
+    'show_grid': False,
+    'axis_line_width': 1.2,
+    'x_label_rotation': 0,
+    'bar_width': 0.55,
+    'bar_line_width': 1.2,
+    'error_line_width': 1.4,
+    'point_size': 30,
+    'show_individual_names': True,
+    'individual_label_size': 7,
+    'individual_label_color': '#111827',
+    'trace_line_color': '#374151',
+    'trace_line_width': 0.7,
+    'trace_height_px': 520,
+    'amp_y_auto': True,
+    'amp_y_min': 0.0,
+    'amp_y_max': 50.0,
+    'freq_y_auto': True,
+    'freq_y_min': 0.0,
+    'freq_y_max': 10.0,
+}
 
 _PLOTLY_RELAYOUT_COMPONENT = None
 
@@ -976,24 +1199,96 @@ def group_options_for(saved_group=None, current_group=None):
             options.append(group)
     return options
 
+def get_figure_style():
+    style = DEFAULT_FIGURE_STYLE.copy()
+    style.update(st.session_state.get('figure_style', {}) or {})
+    widget_key_map = {
+        'fig_font_family': 'font_family',
+        'fig_font_size': 'font_size',
+        'fig_axis_label_size': 'axis_label_size',
+        'fig_tick_label_size': 'tick_label_size',
+        'fig_bar_width': 'bar_width',
+        'fig_bar_line_width': 'bar_line_width',
+        'fig_axis_line_width': 'axis_line_width',
+        'fig_error_line_width': 'error_line_width',
+        'fig_point_size': 'point_size',
+        'fig_x_label_rotation': 'x_label_rotation',
+        'fig_show_individual_names': 'show_individual_names',
+        'fig_individual_label_size': 'individual_label_size',
+        'fig_amp_y_auto': 'amp_y_auto',
+        'fig_amp_y_min': 'amp_y_min',
+        'fig_amp_y_max': 'amp_y_max',
+        'fig_freq_y_auto': 'freq_y_auto',
+        'fig_freq_y_min': 'freq_y_min',
+        'fig_freq_y_max': 'freq_y_max',
+    }
+    for widget_key, style_key in widget_key_map.items():
+        if widget_key in st.session_state:
+            style[style_key] = st.session_state[widget_key]
+    style['axis_color'] = DEFAULT_FIGURE_STYLE['axis_color']
+    style['tick_color'] = DEFAULT_FIGURE_STYLE['tick_color']
+    style['trace_line_color'] = DEFAULT_FIGURE_STYLE['trace_line_color']
+    style['trace_line_width'] = DEFAULT_FIGURE_STYLE['trace_line_width']
+    style['individual_label_color'] = DEFAULT_FIGURE_STYLE['individual_label_color']
+    style['trace_height_px'] = DEFAULT_FIGURE_STYLE['trace_height_px']
+    return style
+
+def group_color_key(group):
+    digest = hashlib.sha1(str(group).encode('utf-8')).hexdigest()[:10]
+    return f'group_color_{digest}'
+
+def default_group_color(group):
+    if group in DEFAULT_GROUP_PALETTE:
+        return DEFAULT_GROUP_PALETTE[group]
+    digest = hashlib.sha1(str(group).encode('utf-8')).hexdigest()
+    hue = int(digest[:2], 16) / 255
+    palette = ['#0f766e', '#7c3aed', '#dc2626', '#2563eb', '#ca8a04', '#be185d', '#4b5563']
+    return palette[int(hue * (len(palette) - 1))]
+
+def group_colors_for(groups):
+    colors = {}
+    saved = st.session_state.setdefault('group_colors', {})
+    for group in groups:
+        colors[group] = saved.get(group) or default_group_color(group)
+    return colors
+
+def record_for_file(file_name):
+    return next((r for r in st.session_state.get('records', []) if r.get('file_name') == file_name), {})
+
+def format_trace_title(file_name, record=None):
+    record = record or record_for_file(file_name)
+    cell = normalize_group_name(record.get('cell_id')) or Path(file_name).stem
+    individual = normalize_group_name(record.get('individual'))
+    group = normalize_group_name(record.get('group'))
+    title = cell
+    if individual:
+        title = f'{individual} - {title}'
+    if group:
+        title = f'{title} ({group})'
+    return title
+
 sync_plotly_chart_state()
 
-def make_trace_figure(sub, events_df, settings, file_name):
+def make_trace_figure(sub, events_df, settings, file_name, record=None, figure_style=None):
+    figure_style = figure_style or get_figure_style()
     direction = settings.get('direction', 'inward (EPSC)')
     marker_color = '#1a6b55' if 'EPSC' in direction else '#b91c1c'
     fig, ax = plt.subplots(figsize=(11, 3.5))
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
     ax.spines[['top', 'right']].set_visible(False)
-    ax.spines[['left', 'bottom']].set_color('#d1d5db')
-    ax.tick_params(colors='#6b7280', labelsize=9)
-    ax.set_xlabel('Time (s)', fontsize=9, color='#6b7280')
-    ax.set_ylabel('Current (pA)', fontsize=9, color='#6b7280')
-    ax.set_title(file_name, fontsize=10, color='#1a1a1a', pad=8)
+    ax.spines[['left', 'bottom']].set_color(figure_style['axis_color'])
+    ax.spines[['left', 'bottom']].set_linewidth(float(figure_style['axis_line_width']))
+    ax.tick_params(colors=figure_style['tick_color'], labelsize=int(figure_style['tick_label_size']), width=float(figure_style['axis_line_width']))
+    ax.set_xlabel('Time (s)', fontsize=int(figure_style['axis_label_size']), color=figure_style['axis_color'], fontfamily=figure_style['font_family'])
+    ax.set_ylabel('Current (pA)', fontsize=int(figure_style['axis_label_size']), color=figure_style['axis_color'], fontfamily=figure_style['font_family'])
+    ax.set_title(format_trace_title(file_name, record), fontsize=int(figure_style['font_size']) + 1, color=figure_style['axis_color'], pad=8, fontfamily=figure_style['font_family'])
+    if figure_style.get('show_grid'):
+        ax.grid(True, color=figure_style['grid_color'], linewidth=0.6, alpha=0.8)
     if not sub.empty:
         bl_end = sub['time_s'].min() + (sub['time_s'].max() - sub['time_s'].min()) * settings.get('baseline_pct', 20) / 100
         ax.axvspan(sub['time_s'].min(), bl_end, color='#f3f4f6', alpha=0.5, label='baseline region', zorder=0)
-        ax.plot(sub['time_s'], sub['signal'], lw=0.7, color='#374151', zorder=1)
+        ax.plot(sub['time_s'], sub['signal'], lw=float(figure_style['trace_line_width']), color=figure_style['trace_line_color'], zorder=1)
         if events_df is not None and not events_df.empty:
             events_df = normalize_events_frame(events_df)
             nbase = max(1, int(len(sub) * settings.get('baseline_pct', 20) / 100))
@@ -1008,20 +1303,24 @@ def make_trace_figure(sub, events_df, settings, file_name):
                 ax.scatter(manual_acc['time_s'], manual_acc['amplitude_pA'] + baseline, s=34, color='#2563eb', zorder=4, marker='D', label=f"{len(manual_acc)} manual")
             if not rej.empty:
                 ax.scatter(rej['time_s'], rej['amplitude_pA'] + baseline, s=18, color='#9ca3af', zorder=2, marker='x', label=f"{len(rej)} rejected")
-        ax.legend(fontsize=8, frameon=False, loc='upper right')
+        ax.legend(fontsize=max(7, int(figure_style['tick_label_size']) - 1), frameon=False, loc='upper right')
         if is_valid_y_range(settings.get('y_min'), settings.get('y_max')):
             ax.set_ylim(float(settings['y_min']), float(settings['y_max']))
     plt.tight_layout(pad=0.8)
     return fig
 
-def fig_to_png_bytes(fig):
+def fig_to_png_bytes(fig, tight=True):
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    save_kwargs = {'format': 'png', 'dpi': 150}
+    if tight:
+        save_kwargs['bbox_inches'] = 'tight'
+    fig.savefig(buf, **save_kwargs)
     buf.seek(0)
     return buf.read()
 
-def make_trace_figure_plotly(sub, events_df, settings, file_name):
+def make_trace_figure_plotly(sub, events_df, settings, file_name, record=None, figure_style=None):
     """Interactive Plotly figure with drag-zoom, box-select, scroll-zoom and double-click reset."""
+    figure_style = figure_style or get_figure_style()
     direction = settings.get('direction', 'inward (EPSC)')
     marker_color = '#1a6b55' if 'EPSC' in direction else '#b91c1c'
     xaxis_revision = f"{file_name}:{settings.get('sweep')}:{settings.get('t_start')}:{settings.get('t_end')}"
@@ -1037,7 +1336,7 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name):
         )
         fig.add_trace(go.Scattergl(
             x=sub['time_s'], y=sub['signal'],
-            mode='lines', line=dict(color='#374151', width=0.8),
+            mode='lines', line=dict(color=figure_style['trace_line_color'], width=float(figure_style['trace_line_width'])),
             name='Trace',
             hovertemplate='Time: %{x:.4f}s<br>Current: %{y:.2f}pA<extra></extra>',
         ))
@@ -1086,21 +1385,23 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name):
                     hovertemplate='Time: %{x:.4f}s<br>Amp: %{customdata[2]:.2f}pA<br>Click to restore<extra></extra>',
                 ))
     fig.update_layout(
-        title=dict(text=file_name, font=dict(size=13, color='#1a1a1a')),
+        title=dict(text=format_trace_title(file_name, record), font=dict(size=int(figure_style['font_size']) + 2, color=figure_style['axis_color'], family=figure_style['font_family'])),
         xaxis=dict(
-            title=dict(text='Time (s)', font=dict(size=11, color='#6b7280')),
-            tickfont=dict(size=10, color='#6b7280'),
-            showgrid=True, gridcolor='rgba(0,0,0,0.05)', zeroline=False,
+            title=dict(text='Time (s)', font=dict(size=int(figure_style['axis_label_size']), color=figure_style['axis_color'], family=figure_style['font_family'])),
+            tickfont=dict(size=int(figure_style['tick_label_size']), color=figure_style['tick_color'], family=figure_style['font_family']),
+            showgrid=bool(figure_style.get('show_grid')), gridcolor=figure_style['grid_color'], zeroline=False,
+            linecolor=figure_style['axis_color'], linewidth=float(figure_style['axis_line_width']), mirror=False,
             uirevision=xaxis_revision,
         ),
         yaxis=dict(
-            title=dict(text='Current (pA)', font=dict(size=11, color='#6b7280')),
-            tickfont=dict(size=10, color='#6b7280'),
-            showgrid=True, gridcolor='rgba(0,0,0,0.05)', zeroline=False,
+            title=dict(text='Current (pA)', font=dict(size=int(figure_style['axis_label_size']), color=figure_style['axis_color'], family=figure_style['font_family'])),
+            tickfont=dict(size=int(figure_style['tick_label_size']), color=figure_style['tick_color'], family=figure_style['font_family']),
+            showgrid=bool(figure_style.get('show_grid')), gridcolor=figure_style['grid_color'], zeroline=False,
+            linecolor=figure_style['axis_color'], linewidth=float(figure_style['axis_line_width']), mirror=False,
             uirevision=yaxis_revision,
         ),
         plot_bgcolor='white', paper_bgcolor='white',
-        height=620,
+        height=int(figure_style.get('trace_height_px', 520)),
         margin=dict(l=50, r=12, t=32, b=40),
         legend=dict(
             font=dict(size=10), bgcolor='rgba(255,255,255,0.8)',
@@ -1123,6 +1424,128 @@ def lighten_hex(hex_color, frac):
     b = int(hex_color[4:6], 16) / 255
     return (r * frac + (1 - frac), g * frac + (1 - frac), b * frac + (1 - frac))
 
+def make_summary_figure(clean, summary, figure_style, group_colors):
+    fig_sum, axes = plt.subplots(1, 2, figsize=(10.5, 4.4), constrained_layout=False)
+    fig_sum.patch.set_facecolor('white')
+    order = sorted(clean['group'].dropna().unique())
+    rng = np.random.default_rng(42)
+    panels = [
+        ('amp_mean_pA', 'Mean Amplitude (pA)', 'amp_mean', 'amp_sem', 'amp'),
+        ('freq_hz', 'Frequency (Hz)', 'freq_mean', 'freq_sem', 'freq'),
+    ]
+    for ax_i, (col, label, mean_col, sem_col, scale_key) in enumerate(panels):
+        ax = axes[ax_i]
+        ax.set_facecolor('white')
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.spines[['left', 'bottom']].set_color(figure_style['axis_color'])
+        ax.spines[['left', 'bottom']].set_linewidth(float(figure_style['axis_line_width']))
+        ax.tick_params(
+            colors=figure_style['tick_color'],
+            labelsize=int(figure_style['tick_label_size']),
+            width=float(figure_style['axis_line_width']),
+            direction='out',
+        )
+        ax.set_ylabel(
+            label,
+            fontsize=int(figure_style['axis_label_size']),
+            color=figure_style['axis_color'],
+            fontfamily=figure_style['font_family'],
+        )
+        if figure_style.get('show_grid'):
+            ax.yaxis.grid(True, color=figure_style['grid_color'], linewidth=0.6, alpha=0.8)
+            ax.set_axisbelow(True)
+
+        xs = np.arange(len(order))
+        individual_handles = []
+        individual_seen = set()
+        for xi, group in enumerate(order):
+            gdf = clean[clean['group'] == group].copy()
+            grp_color = group_colors.get(group, default_group_color(group))
+            individuals = sorted([normalize_group_name(i) for i in gdf['individual'].dropna().unique().tolist() if normalize_group_name(i)])
+            ind_shades = {}
+            for ii, individual in enumerate(individuals):
+                frac = 0.35 + 0.5 * (ii / max(1, len(individuals) - 1)) if len(individuals) > 1 else 0.6
+                ind_shades[individual] = lighten_hex(grp_color, frac)
+
+            gm = summary[summary['group'] == group]
+            mean_val = gm[mean_col].values[0] if not gm.empty else np.nan
+            sem_val = gm[sem_col].values[0] if not gm.empty else np.nan
+            if pd.notna(mean_val):
+                ax.bar(
+                    xi,
+                    mean_val,
+                    yerr=sem_val if pd.notna(sem_val) else None,
+                    capsize=4,
+                    color=grp_color,
+                    alpha=0.55,
+                    edgecolor=grp_color,
+                    linewidth=float(figure_style['bar_line_width']),
+                    width=float(figure_style['bar_width']),
+                    error_kw={'linewidth': float(figure_style['error_line_width'])},
+                )
+
+            point_rows = gdf[[col, 'individual', 'cell_id']].dropna(subset=[col])
+            for _, row in point_rows.iterrows():
+                point_x = xi + float(rng.uniform(-0.1, 0.1))
+                individual = normalize_group_name(row.get('individual'))
+                cell_label = normalize_group_name(row.get('cell_id'))
+                label_text = individual or cell_label
+                point_color = ind_shades.get(individual, lighten_hex(grp_color, 0.6))
+                ax.scatter(
+                    [point_x],
+                    [float(row[col])],
+                    color=point_color,
+                    s=float(figure_style['point_size']),
+                    zorder=4,
+                    edgecolors=grp_color,
+                    linewidths=0.6,
+                )
+                if figure_style.get('show_individual_names') and label_text:
+                    legend_key = (group, label_text)
+                    if legend_key not in individual_seen:
+                        individual_seen.add(legend_key)
+                        individual_handles.append(Line2D(
+                            [0], [0],
+                            marker='o',
+                            linestyle='',
+                            markersize=max(4, int(figure_style['individual_label_size']) * 0.75),
+                            markerfacecolor=point_color,
+                            markeredgecolor=grp_color,
+                            markeredgewidth=0.6,
+                            label=label_text,
+                        ))
+
+        ax.set_xticks(xs)
+        ax.set_xticklabels(
+            order,
+            fontsize=int(figure_style['tick_label_size']),
+            color=figure_style['tick_color'],
+            rotation=int(figure_style['x_label_rotation']),
+            fontfamily=figure_style['font_family'],
+        )
+        if len(order) > 0:
+            x_margin = 0.9
+            ax.set_xlim(-x_margin, (len(order) - 1) + x_margin)
+        if figure_style.get('show_individual_names') and individual_handles:
+            ax.legend(
+                handles=individual_handles,
+                loc='upper right',
+                frameon=False,
+                fontsize=int(figure_style['individual_label_size']),
+                handlelength=0.8,
+                handletextpad=0.35,
+                borderpad=0.15,
+                labelspacing=0.25,
+            )
+        auto_key = f'{scale_key}_y_auto'
+        min_key = f'{scale_key}_y_min'
+        max_key = f'{scale_key}_y_max'
+        if not figure_style.get(auto_key, True) and is_valid_y_range(figure_style.get(min_key), figure_style.get(max_key)):
+            ax.set_ylim(float(figure_style[min_key]), float(figure_style[max_key]))
+    # Keep the two summary panels away from each other and from the image edges.
+    fig_sum.subplots_adjust(left=0.18, right=0.82, bottom=0.18, top=0.88, wspace=0.38)
+    return fig_sum
+
 # ───────────────────────────────────────────
 #  SIDEBAR — controls, file upload, params
 # ───────────────────────────────────────────
@@ -1138,14 +1561,22 @@ with st.sidebar:
           <polyline points="4,18 10,18 14,8 18,28 22,14 26,18 32,18" stroke="white" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" fill="none"/>
         </svg>
         <div>
-            <div style='font-size:13px;font-weight:700;color:#111827;line-height:1.1'>SynCapture</div>
-            <div style='font-size:9px;color:#9ca3af'>Synaptic Event Analysis</div>
+            <div style='font-size:13px;font-weight:700;color:inherit;line-height:1.1'>SynCapture</div>
+            <div style='font-size:9px;color:color-mix(in srgb,currentColor 65%,transparent)'>Synaptic Event Analysis</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    uploaded = st.file_uploader('Upload ABF files', type=['abf'], accept_multiple_files=True, label_visibility='collapsed')
+    upload_label = 'Add ABF files' if not S.file_order else f'Add ABF files · {len(S.file_order)} loaded'
+    upload_icon = '▾' if S.show_uploader else '▸'
+    if st.button(f'{upload_icon} {upload_label}', key='toggle_uploader', use_container_width=True):
+        S.show_uploader = not S.show_uploader
+        st.rerun()
+    uploaded = []
+    if S.show_uploader:
+        uploaded = st.file_uploader('Upload ABF files', type=['abf'], accept_multiple_files=True, label_visibility='collapsed')
     if uploaded:
+        loaded_new_file = False
         for f in uploaded:
             if f.name not in S.files:
                 try:
@@ -1169,8 +1600,12 @@ with st.sidebar:
                         S.events[f.name] = pd.DataFrame(columns=EVENT_COLUMNS)
                     if f.name not in S.settings:
                         S.settings[f.name] = {}
+                    loaded_new_file = True
                 except Exception as e:
                     st.error(f'{f.name}: {e}')
+        if loaded_new_file:
+            S.show_uploader = False
+            st.rerun()
 
     if S.file_order:
         selectable = [n for n in S.file_order if n not in S.skipped]
@@ -1192,7 +1627,7 @@ with st.sidebar:
         prev = S.settings.get(S.active, {})
         default_sweep = prev.get('sweep', sweeps_available[0])
 
-        st.markdown("<p style='font-size:0.75rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Sweep & Window</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:0.75rem;font-weight:600;color:color-mix(in srgb,currentColor 65%,transparent);text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Sweep & Window</p>", unsafe_allow_html=True)
         sweep = st.selectbox('Sweep', sweeps_available, index=sweeps_available.index(default_sweep) if default_sweep in sweeps_available else 0, key=f'sweep_{S.active}')
         sweep_df = df_all[df_all['sweep'] == sweep].copy()
         t_min, t_max = float(sweep_df['time_s'].min()), float(sweep_df['time_s'].max())
@@ -1223,7 +1658,7 @@ with st.sidebar:
         if y_max_key not in st.session_state:
             st.session_state[y_max_key] = float(saved_y_max)
 
-        st.markdown("<p style='font-size:0.75rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Y Scale</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:0.75rem;font-weight:600;color:color-mix(in srgb,currentColor 65%,transparent);text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Y Scale</p>", unsafe_allow_html=True)
         yc1, yc2 = st.columns(2)
         with yc1:
             y_min = st.number_input('Y min (pA)', step=float(y_step), format='%.3f', key=y_min_key)
@@ -1241,7 +1676,7 @@ with st.sidebar:
             st.warning('Y max must be greater than Y min.')
             y_min, y_max = saved_y_min, saved_y_max
 
-        st.markdown("<p style='font-size:0.75rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Detection</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:0.75rem;font-weight:600;color:color-mix(in srgb,currentColor 65%,transparent);text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Detection</p>", unsafe_allow_html=True)
         direction = st.selectbox('Direction', ['inward (EPSC)', 'outward (IPSC)'], index=['inward (EPSC)', 'outward (IPSC)'].index(prev.get('direction', 'inward (EPSC)')) if prev.get('direction', 'inward (EPSC)') in ['inward (EPSC)', 'outward (IPSC)'] else 0, key=f'direction_{S.active}')
         baseline_pct = st.slider('Baseline %', 5, 50, int(prev.get('baseline_pct', 20)), 5, key=f'bl_pct_{S.active}')
 
@@ -1269,17 +1704,7 @@ with st.sidebar:
         lc1, lc2 = st.columns(2)
         with lc1:
             saved_group = saved_rec.get('group', 'naive')
-            group_key = f'group_{S.active}'
-            current_group = remember_group_option(st.session_state.get(group_key))
-            group_options = group_options_for(saved_group, current_group)
-            group = st.selectbox(
-                'Group',
-                group_options,
-                index=group_options.index(saved_group) if saved_group in group_options else 0,
-                key=group_key,
-                accept_new_options=True,
-                placeholder='Select or type a group',
-            )
+            group = st.text_input('Group name', value=saved_group or 'naive', key=f'group_name_{S.active}', placeholder='type a group name')
             group = remember_group_option(group) or 'naive'
         with lc2:
             status_options = ['accepted', 'needs_check', 'rejected']
@@ -1302,8 +1727,8 @@ if not S.file_order:
           <rect width="36" height="36" rx="8" fill="#1a6b55"/>
           <polyline points="4,18 10,18 14,8 18,28 22,14 26,18 32,18" stroke="white" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" fill="none"/>
         </svg>
-        <div style='font-size:1.5rem;font-weight:700;color:#111827;margin-bottom:4px'>SynCapture</div>
-        <p style='color:#6b7280;font-size:0.95rem'>Upload ABF files in the sidebar to begin analysis</p>
+        <div style='font-size:1.5rem;font-weight:700;color:inherit;margin-bottom:4px'>SynCapture</div>
+        <p style='color:color-mix(in srgb,currentColor 65%,transparent);font-size:0.95rem'>Upload ABF files in the sidebar to begin analysis</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1351,13 +1776,16 @@ else:
         S.records.append(json_safe(rec))
         st.toast(f'✓ Saved {cell_id} → dataset ({len(S.records)} files)')
 
+    figure_style = get_figure_style()
+
     # ---- interactive trace chart ----
     win_events = current_events[(current_events['time_s'] >= t_start) & (current_events['time_s'] <= t_end)] if not current_events.empty else current_events
-    fig_plotly = make_trace_figure_plotly(sub, win_events if not win_events.empty else None, S.settings[S.active], S.active)
+    fig_plotly = make_trace_figure_plotly(sub, win_events if not win_events.empty else None, S.settings[S.active], S.active, record_for_file(S.active), figure_style)
     plotly_relayout_chart(
         fig_plotly,
         S.active,
         config={'scrollZoom': True, 'displayModeBar': True, 'doubleClick': False, 'modeBarButtonsToAdd': ['drawrect', 'eraseshape']},
+        height=int(figure_style.get('trace_height_px', 520)),
     )
 
     # ---- metrics row ----
@@ -1367,13 +1795,19 @@ else:
         dur = max(0.001, t_end - t_start)
         window_full_ev = full_ev[(full_ev['time_s'] >= t_start) & (full_ev['time_s'] <= t_end)]
         sm = summary_from_events(window_full_ev, dur)
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
-        m1.metric('Events', sm['n_events'])
-        m2.metric('Manual', sm['n_manual_events'])
-        m3.metric('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—')
-        m4.metric('Mean |Amp|', f"{sm['amp_mean_pA']:.2f} pA" if pd.notna(sm['amp_mean_pA']) else '—')
-        m5.metric('Med |Amp|', f"{sm['amp_median_pA']:.2f} pA" if pd.notna(sm['amp_median_pA']) else '—')
-        m6.metric('Mean IEI', f"{sm['iei_mean_s']:.4f} s" if pd.notna(sm['iei_mean_s']) else '—')
+        metric_items = [
+            ('Events', sm['n_events']),
+            ('Manual', sm['n_manual_events']),
+            ('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—'),
+            ('Mean |Amp|', f"{sm['amp_mean_pA']:.2f} pA" if pd.notna(sm['amp_mean_pA']) else '—'),
+            ('Med |Amp|', f"{sm['amp_median_pA']:.2f} pA" if pd.notna(sm['amp_median_pA']) else '—'),
+            ('Mean IEI', f"{sm['iei_mean_s']:.4f} s" if pd.notna(sm['iei_mean_s']) else '—'),
+        ]
+        metric_cards = ''.join(
+            f"<div class='metric-inline-card'><span class='metric-inline-label'>{label}</span><span class='metric-inline-value'>{value}</span></div>"
+            for label, value in metric_items
+        )
+        st.markdown(f"<div class='metric-inline-row'>{metric_cards}</div>", unsafe_allow_html=True)
 
     # ---- editable event table ----
     if not S.events.get(S.active, pd.DataFrame()).empty:
@@ -1431,48 +1865,218 @@ if S.records:
             amp_mean=('amp_mean_pA', 'mean'), amp_sem=('amp_mean_pA', sem),
             freq_mean=('freq_hz', 'mean'), freq_sem=('freq_hz', sem),
         ).reset_index()
-        fig_sum, axes = plt.subplots(1, 2, figsize=(9, 4))
-        fig_sum.patch.set_facecolor('white')
-        order = sorted(clean['group'].unique())
-        palette = {'naive': '#1a6b55', 'ovx': '#b91c1c', 'control': '#1d4ed8', 'treatment': '#b45309', 'other': '#6b7280'}
-        rng = np.random.default_rng(42)
-        panels = [('amp_mean_pA', 'Mean Amplitude (pA)', 'amp_mean', 'amp_sem'), ('freq_hz', 'Frequency (Hz)', 'freq_mean', 'freq_sem')]
-        for ax_i, (col, label, mean_col, sem_col) in enumerate(panels):
-            ax = axes[ax_i]
-            ax.set_facecolor('white')
-            ax.spines[['top', 'right']].set_visible(False)
-            ax.spines[['left', 'bottom']].set_color('#d1d5db')
-            ax.tick_params(colors='#6b7280', labelsize=9)
-            ax.set_ylabel(label, fontsize=9, color='#374151')
-            xs = np.arange(len(order))
-            for xi, g in enumerate(order):
-                gdf = clean[clean['group'] == g]
-                grp_color = palette.get(g, '#6b7280')
-                inds = sorted([i for i in gdf['individual'].dropna().unique().tolist()])
-                ind_shades = {}
-                for ii, ind in enumerate(inds):
-                    frac = 0.35 + 0.5 * (ii / max(1, len(inds) - 1)) if len(inds) > 1 else 0.6
-                    ind_shades[ind] = lighten_hex(grp_color, frac)
-                gm = summary[summary['group'] == g]
-                mean_val = gm[mean_col].values[0] if not gm.empty else np.nan
-                sem_val = gm[sem_col].values[0] if not gm.empty else np.nan
-                ax.bar(xi, mean_val, yerr=sem_val, capsize=4, color=grp_color, alpha=0.55, edgecolor=grp_color, linewidth=1, width=0.55, error_kw={'linewidth': 1.5})
-                if inds:
-                    for ind in inds:
-                        idf = gdf[gdf['individual'] == ind][col].dropna()
-                        j = rng.uniform(-0.1, 0.1, size=len(idf))
-                        ax.scatter(np.full(len(idf), xi) + j, idf.values, color=ind_shades[ind], s=30, zorder=4, edgecolors=grp_color, linewidths=0.6)
-                else:
-                    vals = gdf[col].dropna()
-                    j = rng.uniform(-0.1, 0.1, size=len(vals))
-                    ax.scatter(np.full(len(vals), xi) + j, vals.values, color=lighten_hex(grp_color, 0.6), s=30, zorder=4, edgecolors=grp_color, linewidths=0.6)
-            ax.set_xticks(xs)
-            ax.set_xticklabels(order, fontsize=9)
-        plt.tight_layout(pad=1.2)
-        st.pyplot(fig_sum, clear_figure=True)
-        plt.close(fig_sum)
-
         all_groups = sorted(clean['group'].unique())
+        figure_style = get_figure_style()
+        amp_y_min_default, amp_y_max_default = infer_y_range(clean['amp_mean_pA'].dropna(), pad_frac=0.12)
+        freq_y_min_default, freq_y_max_default = infer_y_range(clean['freq_hz'].dropna(), pad_frac=0.12)
+        if not S.figure_style:
+            figure_style['amp_y_min'] = min(0.0, float(amp_y_min_default))
+            figure_style['amp_y_max'] = float(amp_y_max_default)
+            figure_style['freq_y_min'] = min(0.0, float(freq_y_min_default))
+            figure_style['freq_y_max'] = float(freq_y_max_default)
+
+        with st.expander('Figure Style', expanded=True):
+            st.markdown("<div class='style-section-title'>Text & Font</div>", unsafe_allow_html=True)
+            text_cols = st.columns([1.4, 0.8, 0.8, 0.8])
+            with text_cols[0]:
+                fonts = ['Arial', 'Helvetica', 'DejaVu Sans', 'Times New Roman']
+                figure_style['font_family'] = st.selectbox(
+                    'Font family',
+                    fonts,
+                    index=fonts.index(figure_style['font_family']) if figure_style['font_family'] in fonts else 0,
+                    key='fig_font_family',
+                    help='Font used for titles, axis labels, tick labels, and exported figures.',
+                )
+            with text_cols[1]:
+                figure_style['font_size'] = st.number_input(
+                    'Figure title size',
+                    min_value=7,
+                    max_value=24,
+                    value=int(figure_style['font_size']),
+                    step=1,
+                    key='fig_font_size',
+                    help='Title text size for trace and summary figures.',
+                )
+            with text_cols[2]:
+                figure_style['axis_label_size'] = st.number_input(
+                    'Axis label size',
+                    min_value=7,
+                    max_value=24,
+                    value=int(figure_style['axis_label_size']),
+                    step=1,
+                    key='fig_axis_label_size',
+                    help='X/Y axis label text size.',
+                )
+            with text_cols[3]:
+                figure_style['tick_label_size'] = st.number_input(
+                    'Tick label size',
+                    min_value=6,
+                    max_value=20,
+                    value=int(figure_style['tick_label_size']),
+                    step=1,
+                    key='fig_tick_label_size',
+                    help='Number and group tick label text size.',
+                )
+
+            st.markdown("<div class='style-section-title'>Axes</div>", unsafe_allow_html=True)
+            axis_cols = st.columns(2)
+            with axis_cols[0]:
+                figure_style['axis_line_width'] = st.slider(
+                    'Axis line width',
+                    0.5,
+                    4.0,
+                    float(figure_style['axis_line_width']),
+                    0.1,
+                    key='fig_axis_line_width',
+                    help='Thickness of the x/y axis lines.',
+                )
+            with axis_cols[1]:
+                figure_style['x_label_rotation'] = st.slider(
+                    'Group label angle',
+                    -45,
+                    45,
+                    int(figure_style['x_label_rotation']),
+                    5,
+                    key='fig_x_label_rotation',
+                    help='Rotation angle for group names on the summary figure x-axis.',
+                )
+            st.markdown("<div class='style-section-title'>Summary Bars & Points</div>", unsafe_allow_html=True)
+            mark_cols = st.columns([1, 1, 1, 1])
+            with mark_cols[0]:
+                figure_style['bar_width'] = st.slider(
+                    'Mean bar width',
+                    0.05,
+                    0.95,
+                    float(figure_style['bar_width']),
+                    0.05,
+                    key='fig_bar_width',
+                    help='Width of the group mean bars in the summary figure.',
+                )
+            with mark_cols[1]:
+                figure_style['bar_line_width'] = st.slider(
+                    'Bar outline width',
+                    0.0,
+                    4.0,
+                    float(figure_style['bar_line_width']),
+                    0.2,
+                    key='fig_bar_line_width',
+                    help='Thickness of the border around summary bars.',
+                )
+            with mark_cols[2]:
+                figure_style['error_line_width'] = st.slider(
+                    'SEM error bar width',
+                    0.5,
+                    4.0,
+                    float(figure_style['error_line_width']),
+                    0.1,
+                    key='fig_error_line_width',
+                    help='Line thickness for SEM error bars.',
+                )
+            with mark_cols[3]:
+                figure_style['point_size'] = st.slider(
+                    'Individual point size',
+                    10,
+                    90,
+                    int(figure_style['point_size']),
+                    2,
+                    key='fig_point_size',
+                    help='Marker size for individual cell values overlaid on summary bars.',
+                )
+
+            st.markdown("<div class='style-section-title'>Individual Legend</div>", unsafe_allow_html=True)
+            legend_cols = st.columns([1.1, 1, 2])
+            with legend_cols[0]:
+                show_names = st.checkbox(
+                    'Show individual legend',
+                    value=bool(figure_style.get('show_individual_names')),
+                    key='fig_show_individual_names',
+                    help='Show a legend mapping each individual to its point color.',
+                )
+                figure_style['show_individual_names'] = show_names
+            with legend_cols[1]:
+                figure_style['individual_label_size'] = st.number_input(
+                    'Legend text size',
+                    min_value=5,
+                    max_value=18,
+                    value=int(figure_style['individual_label_size']),
+                    step=1,
+                    key='fig_individual_label_size',
+                    disabled=not bool(figure_style['show_individual_names']),
+                    help='Text size for individual names in the summary figure legend.',
+                )
+
+            st.markdown("<div class='style-section-title'>Y-Axis Ranges</div>", unsafe_allow_html=True)
+            range_panel_cols = st.columns(2)
+            with range_panel_cols[0]:
+                st.markdown("<div class='style-subsection-title'>Amplitude Summary Panel</div>", unsafe_allow_html=True)
+                figure_style['amp_y_auto'] = st.checkbox(
+                    'Auto-scale amplitude Y-axis',
+                    value=bool(figure_style.get('amp_y_auto', True)),
+                    key='fig_amp_y_auto',
+                    help='Let the amplitude summary panel choose its Y-axis range from the data.',
+                )
+                amp_limit_cols = st.columns(2)
+                with amp_limit_cols[0]:
+                    figure_style['amp_y_min'] = st.number_input(
+                        'Amplitude Y min (pA)',
+                        value=float(figure_style.get('amp_y_min', amp_y_min_default)),
+                        step=1.0,
+                        key='fig_amp_y_min',
+                        disabled=bool(figure_style['amp_y_auto']),
+                        help='Manual minimum for the amplitude summary panel Y-axis.',
+                    )
+                with amp_limit_cols[1]:
+                    figure_style['amp_y_max'] = st.number_input(
+                        'Amplitude Y max (pA)',
+                        value=float(figure_style.get('amp_y_max', amp_y_max_default)),
+                        step=1.0,
+                        key='fig_amp_y_max',
+                        disabled=bool(figure_style['amp_y_auto']),
+                        help='Manual maximum for the amplitude summary panel Y-axis.',
+                    )
+
+            with range_panel_cols[1]:
+                st.markdown("<div class='style-subsection-title'>Frequency Summary Panel</div>", unsafe_allow_html=True)
+                figure_style['freq_y_auto'] = st.checkbox(
+                    'Auto-scale frequency Y-axis',
+                    value=bool(figure_style.get('freq_y_auto', True)),
+                    key='fig_freq_y_auto',
+                    help='Let the frequency summary panel choose its Y-axis range from the data.',
+                )
+                freq_limit_cols = st.columns(2)
+                with freq_limit_cols[0]:
+                    figure_style['freq_y_min'] = st.number_input(
+                        'Frequency Y min (Hz)',
+                        value=float(figure_style.get('freq_y_min', freq_y_min_default)),
+                        step=0.1,
+                        key='fig_freq_y_min',
+                        disabled=bool(figure_style['freq_y_auto']),
+                        help='Manual minimum for the frequency summary panel Y-axis.',
+                    )
+                with freq_limit_cols[1]:
+                    figure_style['freq_y_max'] = st.number_input(
+                        'Frequency Y max (Hz)',
+                        value=float(figure_style.get('freq_y_max', freq_y_max_default)),
+                        step=0.1,
+                        key='fig_freq_y_max',
+                        disabled=bool(figure_style['freq_y_auto']),
+                        help='Manual maximum for the frequency summary panel Y-axis.',
+                    )
+
+            st.markdown("<div class='style-section-title'>Group Colors</div>", unsafe_allow_html=True)
+            color_cols = st.columns(min(6, max(1, len(all_groups))))
+            group_colors = group_colors_for(all_groups)
+            for i, group in enumerate(all_groups):
+                with color_cols[i % len(color_cols)]:
+                    picked = st.color_picker(f'Group color: {group}', value=group_colors[group], key=group_color_key(group))
+                    S.group_colors[group] = picked
+                    group_colors[group] = picked
+
+        S.figure_style = figure_style
+        fig_sum = make_summary_figure(clean, summary, figure_style, group_colors)
+        fig_sum_bytes = fig_to_png_bytes(fig_sum, tight=False)
+        st.image(fig_sum_bytes, width='stretch')
+        plt.close(fig_sum)
 
         def prism_df(col):
             max_len = int(clean.groupby('group')[col].count().max())
@@ -1513,7 +2117,10 @@ if S.records:
             if lp > 0 and fdata_exp['meta']['sample_rate_hz'] > 0 and len(sub_f) > 20:
                 sub_f['signal'] = gaussian_lowpass(sub_f['signal'].to_numpy(), lp, fdata_exp['meta']['sample_rate_hz'])
             ev_f = S.events.get(fname, pd.DataFrame())
-            fig_f = make_trace_figure(sub_f, ev_f, sett, fname)
+            if not ev_f.empty:
+                ev_f = normalize_events_frame(ev_f)
+                ev_f = ev_f[(ev_f['time_s'] >= ts) & (ev_f['time_s'] <= te)]
+            fig_f = make_trace_figure(sub_f, ev_f, sett, fname, rec, figure_style)
             img_bytes[fname] = fig_to_png_bytes(fig_f)
             plt.close(fig_f)
 
@@ -1523,16 +2130,18 @@ if S.records:
             zf.writestr('group_mean_sem.csv', summary.to_csv(index=False))
             zf.writestr('Prism_amplitude_pA.csv', prism_amp.to_csv(index=False))
             zf.writestr('Prism_frequency_Hz.csv', prism_freq.to_csv(index=False))
+            zf.writestr('figures/summary_prism_style.png', fig_sum_bytes)
             if not events_all.empty:
                 zf.writestr('all_events.csv', events_all.to_csv(index=False))
             for fname, ibytes in img_bytes.items():
                 zf.writestr(f'traces/{Path(fname).stem}_detected.png', ibytes)
             zf.writestr('review_state.json', json.dumps(json_safe(S.records), indent=2))
-        st.download_button('⬇ Download all exports (ZIP)', data=zbuf.getvalue(), file_name='syncapture_exports.zip', mime='application/zip', type='primary')
-        exp1, exp2, exp3 = st.columns(3)
-        with exp1:
-            st.download_button('Prism: Amplitude CSV', prism_amp.to_csv(index=False).encode(), file_name='Prism_amplitude_pA.csv', mime='text/csv')
-        with exp2:
-            st.download_button('Prism: Frequency CSV', prism_freq.to_csv(index=False).encode(), file_name='Prism_frequency_Hz.csv', mime='text/csv')
-        with exp3:
-            st.download_button('Per-cell summary CSV', df_rec.to_csv(index=False).encode(), file_name='per_cell_summary.csv', mime='text/csv')
+        export_cols = st.columns([1.15, 1.0, 1.0, 1.0, 3.2], gap='small')
+        with export_cols[0]:
+            st.download_button('Download ZIP', data=zbuf.getvalue(), file_name='syncapture_exports.zip', mime='application/zip', type='primary')
+        with export_cols[1]:
+            st.download_button('Amplitude CSV', prism_amp.to_csv(index=False).encode(), file_name='Prism_amplitude_pA.csv', mime='text/csv')
+        with export_cols[2]:
+            st.download_button('Frequency CSV', prism_freq.to_csv(index=False).encode(), file_name='Prism_frequency_Hz.csv', mime='text/csv')
+        with export_cols[3]:
+            st.download_button('Summary CSV', df_rec.to_csv(index=False).encode(), file_name='per_cell_summary.csv', mime='text/csv')
