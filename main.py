@@ -1055,7 +1055,8 @@ def create_mepsc_template(tau_rise_ms=0.5, tau_decay_ms=3.0, fs_hz=10000, length
     template = (1 - np.exp(-t/tau_rise_ms)) * np.exp(-t/tau_decay_ms)
     return template / np.max(template)
 
-def detect_synaptic_events(trace, time_s, direction, prominence, distance_ms, baseline_pct=20, tau_rise=0.5, tau_decay=3.0):
+def detect_synaptic_events(trace, time_s, direction, prominence, distance_ms, baseline_pct=20, tau_rise=0.5, tau_decay=3.0,
+                           ap_prominence=40.0, ap_min_width_ms=0.5, ap_max_width_ms=5.0):
     if direction == 'Action Potential':
         import efel
         import warnings
@@ -1076,30 +1077,49 @@ def detect_synaptic_events(trace, time_s, direction, prominence, distance_ms, ba
             
         if results and results[0].get('peak_time') is not None:
             res = results[0]
-            peak_times_s = res['peak_time'] / 1000.0
+            raw_peak_times_ms = res['peak_time']
+            raw_peak_voltages = res['peak_voltage']
+            raw_widths = res.get('AP_width')
             
+            if res.get('AP_amplitude') is not None and len(res['AP_amplitude']) == len(raw_peak_times_ms):
+                raw_amplitudes = res['AP_amplitude']
+            else:
+                raw_amplitudes = raw_peak_voltages - prominence
+                
             valid_idx = []
-            if len(peak_times_s) > 0:
-                valid_idx.append(0)
-                for i in range(1, len(peak_times_s)):
-                    if (peak_times_s[i] - peak_times_s[valid_idx[-1]]) * 1000.0 >= distance_ms:
-                        valid_idx.append(i)
-            
+            for i in range(len(raw_peak_times_ms)):
+                t_ms = raw_peak_times_ms[i]
+                val_amp = raw_amplitudes[i]
+                val_width = raw_widths[i] if (raw_widths is not None and i < len(raw_widths)) else np.nan
+                
+                # 1. Filter by prominence (amplitude)
+                if val_amp < ap_prominence:
+                    continue
+                    
+                # 2. Filter by width limits
+                if not np.isnan(val_width):
+                    if val_width < ap_min_width_ms or val_width > ap_max_width_ms:
+                        continue
+                        
+                # 3. Filter by refractory period (min distance) from last accepted peak
+                if len(valid_idx) > 0:
+                    last_t_ms = raw_peak_times_ms[valid_idx[-1]]
+                    if t_ms - last_t_ms < distance_ms:
+                        continue
+                        
+                valid_idx.append(i)
+                
             valid_idx = np.array(valid_idx)
             if len(valid_idx) == 0:
                 return pd.DataFrame(columns=['time_s', 'amplitude_pA', 'prominence', 'iei_s', 'accepted'])
                 
-            peak_times_s = peak_times_s[valid_idx]
+            peak_times_s = raw_peak_times_ms[valid_idx] / 1000.0
+            peak_voltages = raw_peak_voltages[valid_idx]
+            ap_amplitudes = raw_amplitudes[valid_idx]
+            
             n_base = max(1, int(len(trace) * baseline_pct / 100))
             baseline = np.median(trace[:n_base])
-            
-            peak_voltages = res['peak_voltage'][valid_idx]
             amplitude_pA = peak_voltages - baseline
-            
-            if res.get('AP_amplitude') is not None and len(res['AP_amplitude']) == len(res['peak_time']):
-                ap_amplitudes = res['AP_amplitude'][valid_idx]
-            else:
-                ap_amplitudes = peak_voltages - prominence
             
             iei = np.diff(peak_times_s)
             iei = np.concatenate([[np.nan], iei])
@@ -1961,20 +1981,42 @@ with st.sidebar:
         direction = st.selectbox('Direction', ['inward (EPSC)', 'outward (IPSC)', 'Action Potential'], index=0, key='global_direction')
         baseline_pct = st.slider('Baseline %', 5, 50, 20, 5, key='global_bl_pct', help="Initial percentage of the trace used to calculate the 0 pA baseline.")
 
-        pc1, pc2 = st.columns(2)
-        with pc1:
-            if direction == 'Action Potential':
-                prominence = st.number_input('Spike Threshold (mV)', min_value=-150.0, max_value=100.0, value=-20.0, step=1.0, key='global_ap_threshold', help="Voltage threshold (mV) above which a spike is detected.")
-                tau_rise = 0.5
-            else:
-                prominence = st.number_input('Prom. (pA)', min_value=0.5, value=8.0, step=0.5, key='global_prominence', help="Minimum amplitude a peak must stand out above the surrounding background noise.")
-                tau_rise = st.number_input('Tau Rise (ms)', min_value=0.1, value=0.5, step=0.1, key='global_tau_rise', help="Time constant for the rising phase of the template waveform (e.g., 0.5 ms for AMPA, 1.0 ms for GABA).")
-        with pc2:
-            distance_ms = st.number_input('Min IEI (ms)', min_value=0.1, value=5.0, step=0.5, key='global_distance_ms', help="Minimum inter-event interval; the shortest allowed time between two consecutive peaks.")
-            if direction == 'Action Potential':
-                tau_decay = 3.0
-            else:
-                tau_decay = st.number_input('Tau Decay (ms)', min_value=0.5, value=3.0, step=0.5, key='global_tau_decay', help="Time constant for the decaying phase of the template waveform (e.g., 3.0 ms for AMPA, 8.0 ms for GABA).")
+        if direction == 'Action Potential':
+            pc1, pc2 = st.columns(2)
+            with pc1:
+                ap_threshold_mv = st.number_input('AP Threshold (mV)', min_value=-150.0, max_value=100.0, value=float(prev.get('ap_threshold_mv', -20.0)), step=1.0, key='global_ap_threshold_mv', help="Minimum voltage to count as AP peak")
+                ap_min_dist_ms = st.number_input('AP Min Dist (ms)', min_value=0.1, value=float(prev.get('ap_min_dist_ms', 10.0)), step=0.5, key='global_ap_min_dist_ms', help="Minimum gap between two APs")
+                ap_min_width_ms = st.number_input('AP Min Width (ms)', min_value=0.0, value=float(prev.get('ap_min_width_ms', 0.5)), step=0.1, key='global_ap_min_width_ms', help="Reject spikes narrower than this")
+            with pc2:
+                ap_prominence = st.number_input('AP Prominence (mV)', min_value=0.0, value=float(prev.get('ap_prominence', 40.0)), step=1.0, key='global_ap_prominence', help="Increase (40-50) to reject noise artifacts")
+                ap_max_width_ms = st.number_input('AP Max Width (ms)', min_value=0.0, value=float(prev.get('ap_max_width_ms', 5.0)), step=0.1, key='global_ap_max_width_ms', help="Reject slow artifacts wider than this")
+            
+            prominence = ap_threshold_mv
+            distance_ms = ap_min_dist_ms
+            tau_rise = 0.5
+            tau_decay = 3.0
+            
+            S.settings[S.active] = {
+                'direction': direction, 'baseline_pct': baseline_pct,
+                'prominence': prominence, 'distance_ms': distance_ms, 'tau_rise': tau_rise, 'tau_decay': tau_decay,
+                'ap_threshold_mv': ap_threshold_mv, 'ap_prominence': ap_prominence,
+                'ap_min_dist_ms': ap_min_dist_ms, 'ap_min_width_ms': ap_min_width_ms, 'ap_max_width_ms': ap_max_width_ms,
+                'sweep': sweep, 't_start': t_start, 't_end': t_end, 'lp_hz': lp_hz, 'y_min': y_min, 'y_max': y_max
+            }
+        else:
+            pc1, pc2 = st.columns(2)
+            with pc1:
+                prominence = st.number_input('Prom. (pA)', min_value=0.5, value=float(prev.get('prominence', 8.0)), step=0.5, key='global_prominence', help="Minimum amplitude a peak must stand out above the surrounding background noise.")
+                tau_rise = st.number_input('Tau Rise (ms)', min_value=0.1, value=float(prev.get('tau_rise', 0.5)), step=0.1, key='global_tau_rise', help="Time constant for the rising phase of the template waveform (e.g., 0.5 ms for AMPA, 1.0 ms for GABA).")
+            with pc2:
+                distance_ms = st.number_input('Min IEI (ms)', min_value=0.1, value=float(prev.get('distance_ms', 5.0)), step=0.5, key='global_distance_ms', help="Minimum inter-event interval; the shortest allowed time between two consecutive peaks.")
+                tau_decay = st.number_input('Tau Decay (ms)', min_value=0.5, value=float(prev.get('tau_decay', 3.0)), step=0.5, key='global_tau_decay', help="Time constant for the decaying phase of the template waveform (e.g., 3.0 ms for AMPA, 8.0 ms for GABA).")
+                
+            S.settings[S.active] = {
+                'direction': direction, 'baseline_pct': baseline_pct,
+                'prominence': prominence, 'distance_ms': distance_ms, 'tau_rise': tau_rise, 'tau_decay': tau_decay,
+                'sweep': sweep, 't_start': t_start, 't_end': t_end, 'lp_hz': lp_hz, 'y_min': y_min, 'y_max': y_max
+            }
 
         st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
         bc1, bc2 = st.columns(2)
@@ -1982,8 +2024,6 @@ with st.sidebar:
             _run_detect = st.button('⚡ Detect', type='primary', key=f'detect_{S.active}', use_container_width=True)
         with bc2:
             _clear_win = st.button('🗑 Clear', key=f'clear_win_{S.active}', use_container_width=True)
-
-        S.settings[S.active] = {'direction': direction, 'baseline_pct': baseline_pct, 'prominence': prominence, 'distance_ms': distance_ms, 'tau_rise': tau_rise, 'tau_decay': tau_decay, 'sweep': sweep, 't_start': t_start, 't_end': t_end, 'lp_hz': lp_hz, 'y_min': y_min, 'y_max': y_max}
 
         st.markdown("<p style='font-size:0.88rem;font-weight:600;color:inherit;margin:0.5rem 0 0.45rem 0'>🏷️ Cell Labels</p>", unsafe_allow_html=True)
         saved_rec = next((r for r in S.records if r.get('file_name') == S.active), {})
@@ -2220,7 +2260,16 @@ else:
 
     # ---- handle sidebar actions ----
     if _run_detect and not sub.empty:
-        new_ev = detect_synaptic_events(sub['signal'].to_numpy(), sub['time_s'].to_numpy(), direction, prominence, distance_ms, baseline_pct, tau_rise, tau_decay)
+        if direction == 'Action Potential':
+            new_ev = detect_synaptic_events(
+                sub['signal'].to_numpy(), sub['time_s'].to_numpy(), direction, 
+                prominence, distance_ms, baseline_pct, tau_rise, tau_decay,
+                ap_prominence=S.settings[S.active]['ap_prominence'],
+                ap_min_width_ms=S.settings[S.active]['ap_min_width_ms'],
+                ap_max_width_ms=S.settings[S.active]['ap_max_width_ms']
+            )
+        else:
+            new_ev = detect_synaptic_events(sub['signal'].to_numpy(), sub['time_s'].to_numpy(), direction, prominence, distance_ms, baseline_pct, tau_rise, tau_decay)
         outside = current_events[(current_events['time_s'] < t_start) | (current_events['time_s'] > t_end)] if not current_events.empty else pd.DataFrame(columns=new_ev.columns)
         S.events[S.active] = recompute_event_stats(pd.concat([outside, new_ev], ignore_index=True))
         bump_event_table_revision(S.active)
