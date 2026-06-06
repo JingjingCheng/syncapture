@@ -1633,9 +1633,14 @@ def make_summary_figure(clean, summary, figure_style, group_colors):
     fig_sum.patch.set_facecolor('white')
     order = sorted(clean['group'].dropna().unique())
     rng = np.random.default_rng(42)
+    
+    is_ap = (clean['direction'] == 'Action Potential').any() if not clean.empty else False
+    amp_label = 'Mean RMP (mV)' if is_ap else 'Mean Amplitude (pA)'
+    freq_label = 'Firing Frequency (Hz)' if is_ap else 'Frequency (Hz)'
+    
     panels = [
-        ('amp_mean_pA', 'Mean Amplitude (pA)', 'amp_mean', 'amp_sem', 'amp'),
-        ('freq_hz', 'Frequency (Hz)', 'freq_mean', 'freq_sem', 'freq'),
+        ('amp_mean_pA', amp_label, 'amp_mean', 'amp_sem', 'amp'),
+        ('freq_hz', freq_label, 'freq_mean', 'freq_sem', 'freq'),
     ]
     for ax_i, (col, label, mean_col, sem_col, scale_key) in enumerate(panels):
         ax = axes[ax_i]
@@ -2340,6 +2345,8 @@ else:
                 'direction': direction, 'sample_rate_hz': meta['sample_rate_hz'], 'lp_hz': lp_hz,
                 'firing_freq_hz': ap_res_save.get('firing_freq_hz'),
                 'rmp_mv': ap_res_save.get('rmp_mv'),
+                'amp_mean_pA': ap_res_save.get('rmp_mv'),
+                'freq_hz': ap_res_save.get('firing_freq_hz'),
             }
         else:
             sm_s = summary_from_events(all_ev_s[(all_ev_s['time_s'] >= t_start) & (all_ev_s['time_s'] <= t_end)] if not all_ev_s.empty else all_ev_s, dur_s)
@@ -2436,6 +2443,9 @@ else:
 if S.records:
     with st.expander(f'📊 Summary & Export ({len(S.records)} files)', expanded=False):
         df_rec = pd.DataFrame(S.records).sort_values(['group', 'individual', 'cell_id'])
+        for col in ['amp_mean_pA', 'freq_hz']:
+            if col not in df_rec.columns:
+                df_rec[col] = np.nan
         st.dataframe(df_rec, use_container_width=True, height=200)
         clean = df_rec[df_rec['status'] == 'accepted'].copy()
         if not clean.empty:
