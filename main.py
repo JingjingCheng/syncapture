@@ -1644,7 +1644,7 @@ def make_summary_figure(clean, summary, figure_style, group_colors):
     rng = np.random.default_rng(42)
     
     is_ap = (clean['direction'] == 'Action Potential').any() if not clean.empty else False
-    amp_label = 'Mean RMP (mV)' if is_ap else 'Mean Amplitude (pA)'
+    amp_label = 'RMP (mV)' if is_ap else 'Mean Amplitude (pA)'
     freq_label = 'Firing Frequency (Hz)' if is_ap else 'Frequency (Hz)'
     
     panels = [
