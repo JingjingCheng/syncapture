@@ -1495,6 +1495,15 @@ def fig_to_png_bytes(fig, tight=True):
     buf.seek(0)
     return buf.read()
 
+def fig_to_bytes(fig, fmt='pdf', tight=True):
+    buf = io.BytesIO()
+    save_kwargs = {'format': fmt}
+    if tight:
+        save_kwargs['bbox_inches'] = 'tight'
+    fig.savefig(buf, **save_kwargs)
+    buf.seek(0)
+    return buf.read()
+
 def make_trace_figure_plotly(sub, events_df, settings, file_name, record=None, figure_style=None):
     """Interactive Plotly figure with drag-zoom, box-select, scroll-zoom and double-click reset."""
     figure_style = figure_style or get_figure_style()
@@ -2559,7 +2568,8 @@ if S.records:
                     event_rows.append(ev)
             events_all = pd.concat(event_rows, ignore_index=True) if event_rows else pd.DataFrame()
 
-            img_bytes = {}
+            img_pdfs = {}
+            img_svgs = {}
             for rec in S.records:
                 fname = rec['file_name']
                 fdata_exp = S.files.get(fname)
@@ -2579,8 +2589,12 @@ if S.records:
                     ev_f = normalize_events_frame(ev_f)
                     ev_f = ev_f[(ev_f['time_s'] >= ts) & (ev_f['time_s'] <= te)]
                 fig_f = make_trace_figure(sub_f, ev_f, sett, fname, rec, figure_style)
-                img_bytes[fname] = fig_to_png_bytes(fig_f)
+                img_pdfs[fname] = fig_to_bytes(fig_f, fmt='pdf')
+                img_svgs[fname] = fig_to_bytes(fig_f, fmt='svg')
                 plt.close(fig_f)
+
+            fig_sum_pdf = fig_to_bytes(fig_sum, fmt='pdf', tight=False)
+            fig_sum_svg = fig_to_bytes(fig_sum, fmt='svg', tight=False)
 
             zbuf = io.BytesIO()
             with zipfile.ZipFile(zbuf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -2588,11 +2602,14 @@ if S.records:
                 zf.writestr('group_mean_sem.csv', summary.to_csv(index=False))
                 zf.writestr('Prism_amplitude_pA.csv', prism_amp.to_csv(index=False))
                 zf.writestr('Prism_frequency_Hz.csv', prism_freq.to_csv(index=False))
-                zf.writestr('figures/summary_prism_style.png', fig_sum_bytes)
+                zf.writestr('figures/summary_prism_style.pdf', fig_sum_pdf)
+                zf.writestr('figures/summary_prism_style.svg', fig_sum_svg)
                 if not events_all.empty:
                     zf.writestr('all_events.csv', events_all.to_csv(index=False))
-                for fname, ibytes in img_bytes.items():
-                    zf.writestr(f'traces/{Path(fname).stem}_detected.png', ibytes)
+                for fname in img_pdfs.keys():
+                    stem = Path(fname).stem
+                    zf.writestr(f'traces/{stem}_detected.pdf', img_pdfs[fname])
+                    zf.writestr(f'traces/{stem}_detected.svg', img_svgs[fname])
                 zf.writestr('review_state.json', json.dumps(json_safe(S.records), indent=2))
             export_cols = st.columns([1.15, 1.0, 1.0, 1.0, 3.2], gap='small')
             with export_cols[0]:
