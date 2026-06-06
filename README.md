@@ -55,10 +55,18 @@ pip install -r requirements.txt
 Start the Streamlit application:
 
 ```bash
-streamlit run syncapture_base.py
+streamlit run main.py
 ```
 
 The browser should automatically open `http://localhost:8501`.
+
+#### Cloud Deployment (Optional)
+
+You can deploy this application for free on [Streamlit Community Cloud](https://share.streamlit.io/):
+1. Push this repository to your GitHub account.
+2. Log in to Streamlit Community Cloud and click **"New app"**.
+3. Select this repository, branch `main`, and main file path `main.py`.
+4. Click **"Deploy!"**.
 
 #### Step-by-Step Workflow
 
@@ -88,7 +96,7 @@ The browser should automatically open `http://localhost:8501`.
 
 ```
 syncapture/
-├── syncapture_base.py   # Main application logic and UI
+├── main.py              # Main application logic and UI
 ├── requirements.txt     # Python package requirements
 ├── .gitignore           # Git ignore list
 └── README.md            # Project documentation (this file)
@@ -144,10 +152,18 @@ pip install -r requirements.txt
 启动 Streamlit 应用程序：
 
 ```bash
-streamlit run syncapture_base.py
+streamlit run main.py
 ```
 
 浏览器将自动打开 `http://localhost:8501`。
+
+#### 云端部署（可选）
+
+您可以在 [Streamlit Community Cloud](https://share.streamlit.io/) 上免费部署此应用：
+1. 将此仓库推送至您的 GitHub 账号。
+2. 登录 Streamlit Community Cloud 并点击 **"New app"**。
+3. 选择此仓库、分支 `main`，并将主入口文件设为 `main.py`。
+4. 点击 **"Deploy!"** 即可完成部署并获取专属链接。
 
 #### 详细操作流程
 
@@ -177,7 +193,7 @@ streamlit run syncapture_base.py
 
 ```
 syncapture/
-├── syncapture_base.py   # 主应用程序代码与界面
+├── main.py              # 主应用程序代码与界面
 ├── requirements.txt     # Python 依赖清单
 ├── .gitignore           # Git 忽略配置
 └── README.md            # 项目说明文档（本文件）
