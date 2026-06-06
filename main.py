@@ -1908,10 +1908,133 @@ with st.sidebar:
     </style>
     """, unsafe_allow_html=True)
 
-    with st.expander("🎵 Ambient Music", expanded=False):
-        st.markdown("<p style='font-size:0.75rem;color:gray;margin-bottom:0.4rem;line-height:1.2'>Listen to relaxing lo-fi tunes while analyzing your electrophysiology data.</p>", unsafe_allow_html=True)
-        music_url = st.text_input("Audio URL", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3", label_visibility="collapsed")
-        st.audio(music_url, format="audio/mp3", loop=True)
+    with st.expander("🎵 Background Music (007 Theme)", expanded=False):
+        st.markdown("<p style='font-size:0.75rem;color:gray;margin-bottom:0.4rem;line-height:1.2'>Listen to the James Bond Theme or paste your own MP3 URL! (Maintains playback position across uploads/actions)</p>", unsafe_allow_html=True)
+        music_url = st.text_input("Audio URL", "https://archive.org/download/tvtunes_4619/James%20Bond.mp3", label_visibility="collapsed")
+        
+        player_html = f"""
+        <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 0.8rem; color: #374151; display: flex; flex-direction: column; gap: 8px;">
+            <audio id="bg-audio" loop preload="auto">
+                <source src="{music_url}" type="audio/mp3">
+            </audio>
+            <div style="display: flex; align-items: center; gap: 10px; margin-top: 2px;">
+                <button id="play-btn" style="background: #1a6b55; color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 0.75rem; font-weight: 600; min-width: 60px; outline: none;">Play</button>
+                <span id="status" style="font-size: 0.75rem; color: #6b7280; font-weight: 500;">Stopped</span>
+                <div style="display: flex; align-items: center; gap: 6px; margin-left: auto; padding-right: 5px;">
+                    <span style="font-size: 0.7rem; color: #9ca3af; user-select: none;">Vol</span>
+                    <input id="volume-slider" type="range" min="0" max="1" step="0.05" value="0.5" style="width: 70px; height: 4px; cursor: pointer; -webkit-appearance: none; background: #e5e7eb; border-radius: 2px; outline: none;">
+                </div>
+            </div>
+            <style>
+                #volume-slider::-webkit-slider-thumb {{
+                    -webkit-appearance: none;
+                    appearance: none;
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 50%;
+                    background: #1a6b55;
+                    cursor: pointer;
+                }}
+                #volume-slider::-moz-range-thumb {{
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 50%;
+                    background: #1a6b55;
+                    cursor: pointer;
+                }}
+            </style>
+            <script>
+                const audio = document.getElementById('bg-audio');
+                const playBtn = document.getElementById('play-btn');
+                const status = document.getElementById('status');
+                const volumeSlider = document.getElementById('volume-slider');
+
+                // Check URL change
+                const currentUrl = "{music_url}";
+                const savedUrl = localStorage.getItem('syncapture_music_url');
+                let savedTime = localStorage.getItem('syncapture_music_time');
+                
+                if (savedUrl !== currentUrl) {{
+                    localStorage.setItem('syncapture_music_url', currentUrl);
+                    localStorage.setItem('syncapture_music_time', '0');
+                    savedTime = '0';
+                }}
+
+                const savedPlaying = localStorage.getItem('syncapture_music_playing');
+                const savedVolume = localStorage.getItem('syncapture_music_volume');
+
+                if (savedVolume) {{
+                    audio.volume = parseFloat(savedVolume);
+                    volumeSlider.value = savedVolume;
+                }} else {{
+                    audio.volume = 0.5;
+                }}
+
+                function restoreTime() {{
+                    if (savedTime && isFinite(savedTime) && parseFloat(savedTime) > 0) {{
+                        try {{
+                            audio.currentTime = parseFloat(savedTime);
+                            savedTime = null; // restore once
+                        }} catch (e) {{
+                            console.log('Error seeking:', e);
+                        }}
+                    }}
+                }}
+
+                function tryAutoplay() {{
+                    restoreTime();
+                    if (savedPlaying === 'true') {{
+                        audio.play().then(() => {{
+                            playBtn.textContent = 'Pause';
+                            status.textContent = 'Playing';
+                        }}).catch(err => {{
+                            console.log('Autoplay blocked. Click Play.', err);
+                            playBtn.textContent = 'Play';
+                            status.textContent = 'Click Play';
+                        }});
+                    }}
+                }}
+
+                audio.addEventListener('loadedmetadata', restoreTime);
+                audio.addEventListener('canplay', restoreTime);
+                
+                // Try immediate autoplay
+                tryAutoplay();
+
+                playBtn.addEventListener('click', () => {{
+                    if (audio.paused) {{
+                        audio.play().then(() => {{
+                            playBtn.textContent = 'Pause';
+                            status.textContent = 'Playing';
+                            localStorage.setItem('syncapture_music_playing', 'true');
+                        }}).catch(err => {{
+                            console.error('Play failed:', err);
+                        }});
+                    }} else {{
+                        audio.pause();
+                        playBtn.textContent = 'Play';
+                        status.textContent = 'Paused';
+                        localStorage.setItem('syncapture_music_playing', 'false');
+                    }}
+                }});
+
+                volumeSlider.addEventListener('input', (e) => {{
+                    const vol = parseFloat(e.target.value);
+                    audio.volume = vol;
+                    localStorage.setItem('syncapture_music_volume', vol);
+                }});
+
+                // Save time periodically
+                setInterval(() => {{
+                    if (!audio.paused) {{
+                        localStorage.setItem('syncapture_music_time', audio.currentTime);
+                    }}
+                }}, 800);
+            </script>
+        </div>
+        """
+        import streamlit.components.v1 as components
+        components.html(player_html, height=52)
 
     st.markdown("""
     <div style='height:1rem'></div>
