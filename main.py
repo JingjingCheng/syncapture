@@ -1228,6 +1228,165 @@ def summary_from_events(events_df, window_dur_s):
         'iei_mean_s': iei.mean() if n else np.nan,
     }
 
+def analyze_action_potential_features(sub, win_events, settings):
+    accepted_events = win_events[win_events['accepted'] == True].sort_values('time_s') if not win_events.empty else pd.DataFrame()
+    num_spikes = len(accepted_events)
+    
+    trace = sub['signal'].to_numpy()
+    time_s = sub['time_s'].to_numpy()
+    
+    if len(trace) < 2 or len(time_s) < 2:
+        return {}
+        
+    dt = np.median(np.diff(time_s))
+    
+    # 1. Firing frequency (Hz)
+    duration_s = max(0.001, time_s[-1] - time_s[0])
+    firing_freq_hz = num_spikes / duration_s
+    
+    # 2. Resting membrane potential (mV)
+    baseline_pct = settings.get('baseline_pct', 20)
+    n_base = max(1, int(len(trace) * baseline_pct / 100))
+    rmp_mv = np.median(trace[:n_base])
+    
+    import efel
+    import warnings
+    
+    ap_widths = []
+    ap_rise_rates = []
+    ahp_depths = []
+    accommodation_idx = np.nan
+    
+    if num_spikes > 0:
+        ap_threshold_mv = settings.get('ap_threshold_mv', -20.0)
+        efel.set_setting('Threshold', ap_threshold_mv)
+        
+        trace_data = {
+            'T': time_s * 1000.0,
+            'V': trace,
+            'stim_start': [time_s[0] * 1000.0],
+            'stim_end': [time_s[-1] * 1000.0]
+        }
+        
+        feature_list = ['peak_time', 'AP_width', 'AP_rise_rate', 'AHP_depth', 'adaptation_index']
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            results = efel.get_feature_values([trace_data], feature_list)
+            
+        if results and results[0].get('peak_time') is not None:
+            res = results[0]
+            efel_peak_times_s = res['peak_time'] / 1000.0
+            
+            matched_indices = []
+            for _, row in accepted_events.iterrows():
+                spike_t = row['time_s']
+                diffs = np.abs(efel_peak_times_s - spike_t)
+                if len(diffs) > 0:
+                    min_idx = np.argmin(diffs)
+                    if diffs[min_idx] < 0.005:  # within 5 ms
+                        matched_indices.append(min_idx)
+            
+            if matched_indices:
+                raw_widths = res.get('AP_width')
+                if raw_widths is not None and len(raw_widths) == len(efel_peak_times_s):
+                    ap_widths = [raw_widths[idx] for idx in matched_indices if not np.isnan(raw_widths[idx])]
+                    
+                raw_rise_rates = res.get('AP_rise_rate')
+                if raw_rise_rates is not None and len(raw_rise_rates) == len(efel_peak_times_s):
+                    ap_rise_rates = [raw_rise_rates[idx] for idx in matched_indices if not np.isnan(raw_rise_rates[idx])]
+                    
+                raw_ahps = res.get('AHP_depth')
+                if raw_ahps is not None and len(raw_ahps) == len(efel_peak_times_s):
+                    ahp_depths = [raw_ahps[idx] for idx in matched_indices if not np.isnan(raw_ahps[idx])]
+            
+            if num_spikes >= 3:
+                spike_times_ms = accepted_events['time_s'].to_numpy() * 1000.0
+                isis = np.diff(spike_times_ms)
+                if len(isis) >= 2:
+                    ratios = []
+                    for i in range(1, len(isis)):
+                        denom = isis[i] + isis[i-1]
+                        if denom > 0:
+                            ratios.append((isis[i] - isis[i-1]) / denom)
+                    if ratios:
+                        accommodation_idx = np.mean(ratios)
+            else:
+                accommodation_idx = np.nan
+                
+    mean_width_ms = np.mean(ap_widths) if ap_widths else np.nan
+    sd_width_ms = np.std(ap_widths, ddof=1) if len(ap_widths) > 1 else np.nan
+    
+    mean_rise_rate = np.mean(ap_rise_rates) if ap_rise_rates else np.nan
+    sd_rise_rate = np.std(ap_rise_rates, ddof=1) if len(ap_rise_rates) > 1 else np.nan
+    
+    mean_ahp_depth = np.mean(ahp_depths) if ahp_depths else np.nan
+    sd_ahp_depth = np.std(ahp_depths, ddof=1) if len(ahp_depths) > 1 else np.nan
+    
+    if np.isnan(mean_rise_rate) and num_spikes > 0:
+        est_rise_rates = []
+        dV_dt = np.diff(trace) / (dt * 1000.0)
+        for _, row in accepted_events.iterrows():
+            spike_t = row['time_s']
+            peak_idx = np.argmin(np.abs(time_s - spike_t))
+            win_size = int(2.0 / (dt * 1000.0))
+            start_win = max(0, peak_idx - win_size)
+            if peak_idx > start_win:
+                max_slope = np.max(dV_dt[start_win:peak_idx])
+                est_rise_rates.append(max_slope)
+        if est_rise_rates:
+            mean_rise_rate = np.mean(est_rise_rates)
+            sd_rise_rate = np.std(est_rise_rates, ddof=1) if len(est_rise_rates) > 1 else np.nan
+            
+    if np.isnan(mean_ahp_depth) and num_spikes > 0:
+        est_ahp_depths = []
+        ap_threshold_mv = settings.get('ap_threshold_mv', -20.0)
+        for i in range(num_spikes):
+            spike_t = accepted_events['time_s'].iloc[i]
+            peak_idx = np.argmin(np.abs(time_s - spike_t))
+            next_t = accepted_events['time_s'].iloc[i+1] if i + 1 < num_spikes else time_s[-1]
+            next_idx = np.argmin(np.abs(time_s - next_t))
+            limit_idx = peak_idx + int(100.0 / (dt * 1000.0))
+            end_search = min(next_idx, limit_idx, len(trace) - 1)
+            
+            if end_search > peak_idx:
+                post_min_v = np.min(trace[peak_idx:end_search])
+                est_ahp_depths.append(ap_threshold_mv - post_min_v)
+        if est_ahp_depths:
+            mean_ahp_depth = np.mean(est_ahp_depths)
+            sd_ahp_depth = np.std(est_ahp_depths, ddof=1) if len(est_ahp_depths) > 1 else np.nan
+
+    if np.isnan(mean_width_ms) and num_spikes > 0:
+        est_widths = []
+        ap_threshold_mv = settings.get('ap_threshold_mv', -20.0)
+        for _, row in accepted_events.iterrows():
+            spike_t = row['time_s']
+            peak_idx = np.argmin(np.abs(time_s - spike_t))
+            peak_v = trace[peak_idx]
+            half_height_v = ap_threshold_mv + (peak_v - ap_threshold_mv) / 2.0
+            left_idx = peak_idx
+            while left_idx > 0 and trace[left_idx] > half_height_v:
+                left_idx -= 1
+            right_idx = peak_idx
+            while right_idx < len(trace) - 1 and trace[right_idx] > half_height_v:
+                right_idx += 1
+            width_ms = (right_idx - left_idx) * dt * 1000.0
+            est_widths.append(width_ms)
+        if est_widths:
+            mean_width_ms = np.mean(est_widths)
+            sd_width_ms = np.std(est_widths, ddof=1) if len(est_widths) > 1 else np.nan
+            
+    return {
+        'firing_freq_hz': firing_freq_hz,
+        'rmp_mv': rmp_mv,
+        'ap_width_mean': mean_width_ms,
+        'ap_width_sd': sd_width_ms,
+        'ap_rise_rate_mean': mean_rise_rate,
+        'ap_rise_rate_sd': sd_rise_rate,
+        'ahp_depth_mean': mean_ahp_depth,
+        'ahp_depth_sd': sd_ahp_depth,
+        'accommodation_idx': accommodation_idx
+    }
+
 def json_safe(value):
     if isinstance(value, dict):
         return {str(k): json_safe(v) for k, v in value.items()}
@@ -2288,6 +2447,18 @@ else:
             'status': status, 'sweep': sweep, 'window_start_s': t_start, 'window_end_s': t_end, 'window_dur_s': dur_s,
             **sm_s, 'lp_hz': lp_hz, 'direction': direction, 'sample_rate_hz': meta['sample_rate_hz'],
         }
+        if direction == 'Action Potential':
+            ap_res_save = analyze_action_potential_features(sub, all_ev_s[(all_ev_s['time_s'] >= t_start) & (all_ev_s['time_s'] <= t_end)] if not all_ev_s.empty else all_ev_s, S.settings[S.active])
+            rec.update({
+                'rmp_mv': ap_res_save.get('rmp_mv'),
+                'ap_width_mean_ms': ap_res_save.get('ap_width_mean'),
+                'ap_width_sd_ms': ap_res_save.get('ap_width_sd'),
+                'ap_rise_rate_mean_v_s': ap_res_save.get('ap_rise_rate_mean'),
+                'ap_rise_rate_sd_v_s': ap_res_save.get('ap_rise_rate_sd'),
+                'ahp_depth_mean_mv': ap_res_save.get('ahp_depth_mean'),
+                'ahp_depth_sd_mv': ap_res_save.get('ahp_depth_sd'),
+                'accommodation_index': ap_res_save.get('accommodation_idx')
+            })
         S.records = [r for r in S.records if r.get('file_name') != S.active]
         S.records.append(json_safe(rec))
         st.toast(f'✓ Saved {cell_id} → dataset ({len(S.records)} files)')
@@ -2303,6 +2474,51 @@ else:
         config={'scrollZoom': True, 'displayModeBar': True, 'doubleClick': False, 'modeBarButtonsToAdd': ['drawrect', 'eraseshape']},
         height=int(figure_style.get('trace_height_px', 520)),
     )
+
+    # ---- Action Potential Features Row ----
+    if direction == 'Action Potential':
+        ap_res = analyze_action_potential_features(sub, win_events, S.settings[S.active])
+        if ap_res:
+            def format_val(val, unit, format_str='%.2f', err=None):
+                if pd.isna(val):
+                    return '—'
+                base = format_str % val
+                if err is not None and pd.notna(err) and err > 0:
+                    base += f" ± {format_str % err}"
+                return f"{base} {unit}"
+                
+            metrics_data = [
+                ('Firing Frequency', format_val(ap_res['firing_freq_hz'], 'Hz', '%.2f'), 'Spike rate over the window duration'),
+                ('Resting Membrane Potential', format_val(ap_res['rmp_mv'], 'mV', '%.1f'), 'Baseline potential estimated from initial trace phase'),
+                ('Action Potential Width', format_val(ap_res['ap_width_mean'], 'ms', '%.2f', ap_res['ap_width_sd']), 'AP width at threshold or half-amplitude'),
+                ('Rise Rate / Slope', format_val(ap_res['ap_rise_rate_mean'], 'V/s', '%.1f', ap_res['ap_rise_rate_sd']), 'Maximum slope dV/dt of the rising phase'),
+                ('AHP Depth', format_val(ap_res['ahp_depth_mean'], 'mV', '%.1f', ap_res['ahp_depth_sd']), 'Afterhyperpolarization depth relative to threshold'),
+                ('Accommodation Index', format_val(ap_res['accommodation_idx'], '', '%.3f'), 'Spike frequency adaptation index over the spike train')
+            ]
+            
+            cards_html = "".join(
+                f"""
+                <div style='background:rgba(255,255,255,0.7);border:1px solid rgba(124,58,237,0.12);border-left:4px solid #7c3aed;border-radius:6px;padding:8px 12px;display:flex;flex-direction:column;gap:2px' title='{tooltip}'>
+                    <span style='font-size:0.75rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.3px'>{name}</span>
+                    <span style='font-size:1.1rem;font-weight:700;color:#7c3aed'>{val}</span>
+                </div>
+                """
+                for name, val, tooltip in metrics_data
+            )
+            
+            st.markdown(f"""
+            <div style='margin-top:0.6rem;margin-bottom:0.8rem;padding:0.9rem;border-radius:8px;background:linear-gradient(135deg, rgba(124,58,237,0.06) 0%, rgba(124,58,237,0.02) 100%);border:1px solid rgba(124,58,237,0.16);box-shadow:0 4px 6px -1px rgba(0,0,0,0.01)'>
+                <div style='display:flex;align-items:center;gap:6px;margin-bottom:0.75rem'>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block">
+                        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                    </svg>
+                    <span style='font-size:0.88rem;font-weight:700;color:#4b5563;letter-spacing:0.3px'>Action Potential Properties</span>
+                </div>
+                <div style='display:grid;grid-template-columns:repeat(auto-fit, minmax(170px, 1fr));gap:10px'>
+                    {cards_html}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
     # ---- metrics row ----
     fdata = S.files.get(S.active, {}) if 'files' in S else {}
