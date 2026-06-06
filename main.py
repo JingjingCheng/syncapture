@@ -164,15 +164,19 @@ div[data-testid="stMetric"] [data-testid="stMetricValue"] {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.45rem;
-  margin: 0.35rem 0 0.45rem 0;
+  margin: -1.2rem 0 0.8rem 0;
+  position: relative;
+  z-index: 10;
 }
 .metric-inline-card {
   display: flex;
-  align-items: baseline;
-  gap: 0.35rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
   min-width: 0;
-  min-height: 2.05rem;
-  padding: 0.28rem 0.42rem;
+  min-height: 3.4rem;
+  padding: 0.4rem 0.42rem;
   overflow: hidden;
   white-space: nowrap;
   background: color-mix(in srgb, currentColor 5%, transparent);
@@ -185,14 +189,14 @@ div[data-testid="stMetric"] [data-testid="stMetricValue"] {
   overflow: hidden;
   text-overflow: ellipsis;
   color: color-mix(in srgb, currentColor 65%, transparent);
-  font-size: 0.62rem;
+  font-size: 0.85rem;
   font-weight: 600;
   line-height: 1;
 }
 .metric-inline-value {
   flex: 0 0 auto;
   color: inherit;
-  font-size: 0.74rem;
+  font-size: 1.15rem;
   font-weight: 600;
   line-height: 1;
 }
@@ -1099,14 +1103,29 @@ def detect_synaptic_events(trace, time_s, direction, prominence, distance_ms, ba
         else:
             corrected_idx[i] = win_start + np.argmax(y[win_start:win_end])
 
+    raw_amps = y.iloc[corrected_idx] if isinstance(y, pd.Series) else y[corrected_idx]
+    valid = np.array((raw_amps <= -prominence) if direction == 'inward (EPSC)' else (raw_amps >= prominence))
+
+    if not np.any(valid):
+        return pd.DataFrame(columns=['time_s', 'amplitude_pA', 'prominence', 'iei_s', 'accepted'])
+
+    proms = props.get('prominences', np.full(len(idx), np.nan))
+
+    corrected_idx = corrected_idx[valid]
+    idx = idx[valid]
+    if isinstance(raw_amps, pd.Series):
+        raw_amps = raw_amps.to_numpy()
+    raw_amps = raw_amps[valid]
+    proms = proms[valid]
+
     peak_times = time_s[corrected_idx]
     iei = np.diff(peak_times)
     iei = np.concatenate([[np.nan], iei])
 
     return pd.DataFrame({
         'time_s': peak_times,
-        'amplitude_pA': y.iloc[corrected_idx] if isinstance(y, pd.Series) else y[corrected_idx],
-        'prominence': props.get('prominences', np.full(len(idx), np.nan)),
+        'amplitude_pA': raw_amps,
+        'prominence': proms,
         'iei_s': iei,
         'accepted': True,
     })
@@ -1143,6 +1162,38 @@ def json_safe(value):
     if isinstance(value, float):
         return value if np.isfinite(value) else None
     return value
+
+# ───────────────────────────────────────────
+#  ANALYTICS COUNTERS
+# ───────────────────────────────────────────
+import requests
+import datetime
+
+ABACUS_NAMESPACE = "syncapture_prod_v1"
+
+@st.cache_data(ttl=300)
+def get_counter(key):
+    try:
+        r = requests.get(f"https://abacus.jasoncameron.dev/get/{ABACUS_NAMESPACE}/{key}", timeout=2)
+        if r.status_code == 200:
+            return r.json().get('value', 0)
+    except:
+        pass
+    return 0
+
+def inc_counter(key):
+    try:
+        r = requests.get(f"https://abacus.jasoncameron.dev/hit/{ABACUS_NAMESPACE}/{key}", timeout=2)
+        if r.status_code == 200:
+            return r.json().get('value', 0)
+    except:
+        pass
+    return 0
+
+def record_event(event_type):
+    today = datetime.date.today().isoformat()
+    inc_counter(event_type)
+    return inc_counter(f"{event_type}_{today}")
 
 def infer_y_range(values, pad_frac=0.05):
     arr = np.asarray(values, dtype=float)
@@ -1279,10 +1330,10 @@ def make_trace_figure(sub, events_df, settings, file_name, record=None, figure_s
     ax.spines[['top', 'right']].set_visible(False)
     ax.spines[['left', 'bottom']].set_color(figure_style['axis_color'])
     ax.spines[['left', 'bottom']].set_linewidth(float(figure_style['axis_line_width']))
-    ax.tick_params(colors=figure_style['tick_color'], labelsize=int(figure_style['tick_label_size']), width=float(figure_style['axis_line_width']))
-    ax.set_xlabel('Time (s)', fontsize=int(figure_style['axis_label_size']), color=figure_style['axis_color'], fontfamily=figure_style['font_family'])
-    ax.set_ylabel('Current (pA)', fontsize=int(figure_style['axis_label_size']), color=figure_style['axis_color'], fontfamily=figure_style['font_family'])
-    ax.set_title(format_trace_title(file_name, record), fontsize=int(figure_style['font_size']) + 1, color=figure_style['axis_color'], pad=8, fontfamily=figure_style['font_family'])
+    ax.tick_params(colors=figure_style['tick_color'], labelsize=14, width=float(figure_style['axis_line_width']))
+    ax.set_xlabel('Time (s)', fontsize=18, color=figure_style['axis_color'], fontfamily=figure_style['font_family'])
+    ax.set_ylabel('Current (pA)', fontsize=18, color=figure_style['axis_color'], fontfamily=figure_style['font_family'])
+    ax.set_title(format_trace_title(file_name, record), fontsize=18, color=figure_style['axis_color'], pad=8, fontfamily=figure_style['font_family'])
     if figure_style.get('show_grid'):
         ax.grid(True, color=figure_style['grid_color'], linewidth=0.6, alpha=0.8)
     if not sub.empty:
@@ -1385,17 +1436,17 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name, record=None, f
                     hovertemplate='Time: %{x:.4f}s<br>Amp: %{customdata[2]:.2f}pA<br>Click to restore<extra></extra>',
                 ))
     fig.update_layout(
-        title=dict(text=format_trace_title(file_name, record), font=dict(size=int(figure_style['font_size']) + 2, color=figure_style['axis_color'], family=figure_style['font_family'])),
+        title=dict(text=format_trace_title(file_name, record), font=dict(size=18, color=figure_style['axis_color'], family=figure_style['font_family'])),
         xaxis=dict(
-            title=dict(text='Time (s)', font=dict(size=int(figure_style['axis_label_size']), color=figure_style['axis_color'], family=figure_style['font_family'])),
-            tickfont=dict(size=int(figure_style['tick_label_size']), color=figure_style['tick_color'], family=figure_style['font_family']),
+            title=dict(text='Time (s)', font=dict(size=18, color=figure_style['axis_color'], family=figure_style['font_family'])),
+            tickfont=dict(size=14, color=figure_style['tick_color'], family=figure_style['font_family']),
             showgrid=bool(figure_style.get('show_grid')), gridcolor=figure_style['grid_color'], zeroline=False,
             linecolor=figure_style['axis_color'], linewidth=float(figure_style['axis_line_width']), mirror=False,
             uirevision=xaxis_revision,
         ),
         yaxis=dict(
-            title=dict(text='Current (pA)', font=dict(size=int(figure_style['axis_label_size']), color=figure_style['axis_color'], family=figure_style['font_family'])),
-            tickfont=dict(size=int(figure_style['tick_label_size']), color=figure_style['tick_color'], family=figure_style['font_family']),
+            title=dict(text='Current (pA)', font=dict(size=18, color=figure_style['axis_color'], family=figure_style['font_family'])),
+            tickfont=dict(size=14, color=figure_style['tick_color'], family=figure_style['font_family']),
             showgrid=bool(figure_style.get('show_grid')), gridcolor=figure_style['grid_color'], zeroline=False,
             linecolor=figure_style['axis_color'], linewidth=float(figure_style['axis_line_width']), mirror=False,
             uirevision=yaxis_revision,
@@ -1547,34 +1598,149 @@ def make_summary_figure(clean, summary, figure_style, group_colors):
     return fig_sum
 
 # ───────────────────────────────────────────
+#  DONATION DIALOG
+# ───────────────────────────────────────────
+@st.dialog("☕ Support the Developer")
+def show_donation_dialog():
+    st.markdown("<p style='font-size: 1rem;'>Thank you for using <b>SynCapture</b>! Your support helps keep this project free and open-source.</p>", unsafe_allow_html=True)
+    
+    st.markdown("##### 🌍 International Users")
+    st.markdown("""
+    <a href="https://buymeacoffee.com/skyblingbling" target="_blank" style="
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        background-color: #FFDD00;
+        color: #000000;
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 1rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    "><span style='font-size: 1.2em; margin-right: 6px;'>☕</span> Buy me a coffee</a>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    st.markdown("##### 🇨🇳 国内用户 (WeChat / Alipay)")
+    import os
+    if os.path.exists('donate.JPG'):
+        _, center_col, _ = st.columns([1, 2, 1])
+        with center_col:
+            st.image('donate.JPG', use_container_width=True)
+    elif os.path.exists('donate.jpg'):
+        _, center_col, _ = st.columns([1, 2, 1])
+        with center_col:
+            st.image('donate.jpg', use_container_width=True)
+    else:
+        st.info("Donation QR code not found.")
+
+# ───────────────────────────────────────────
+#  SUGGESTION DIALOG
+# ───────────────────────────────────────────
+@st.dialog("💡 Send a Suggestion")
+def show_suggestion_dialog():
+    st.markdown("We'd love to hear your feedback or feature requests!")
+    
+    email = st.text_input("Your Email (optional)", placeholder="name@example.com")
+    suggestion = st.text_area("Your Suggestion", height=150, placeholder="What can we improve?")
+    
+    if st.button("Submit", type='primary', use_container_width=True):
+        if not suggestion.strip():
+            st.error("Please enter a suggestion.")
+        else:
+            # TODO: Replace with your actual Formspree endpoint URL
+            # e.g., "https://formspree.io/f/your_form_id"
+            webhook_url = "https://formspree.io/f/mpqeqlwd" 
+            
+            try:
+                import requests
+                data = {
+                    "email": email if email.strip() else "anonymous",
+                    "message": suggestion
+                }
+                if "PLACEHOLDER" in webhook_url:
+                    st.warning("⚠️ Developer note: Please replace the `webhook_url` in main.py with your real Formspree endpoint (formspree.io).")
+                    st.success("Your suggestion was collected (Test Mode).")
+                else:
+                    response = requests.post(webhook_url, json=data, timeout=5)
+                    if response.status_code in [200, 201]:
+                        st.success("🎉 Thank you! Your suggestion has been sent directly to the developer.")
+                    else:
+                        st.error(f"Failed to send. Error code: {response.status_code}")
+            except Exception as e:
+                st.error(f"Network error: {e}")
+
+# ───────────────────────────────────────────
+#  ADMIN DASHBOARD
+# ───────────────────────────────────────────
+@st.dialog("📊 Admin Dashboard", width="large")
+def show_admin_dashboard():
+    st.markdown("### Daily Analytics (Last 7 Days)")
+    import datetime
+    import pandas as pd
+    today = datetime.date.today()
+    dates = [(today - datetime.timedelta(days=i)).isoformat() for i in range(7)]
+    dates.reverse()
+    
+    visits_data = []
+    likes_data = []
+    
+    for d in dates:
+        visits_data.append(get_counter(f"visits_{d}"))
+        likes_data.append(get_counter(f"likes_{d}"))
+        
+    df = pd.DataFrame({
+        "Date": dates,
+        "Visits": visits_data,
+        "Likes": likes_data
+    })
+    
+    st.bar_chart(df.set_index("Date"))
+    st.dataframe(df, use_container_width=True)
+    
+    st.markdown("### All-Time Totals")
+    c1, c2 = st.columns(2)
+    c1.metric("Total Visits", get_counter("visits"))
+    c2.metric("Total Likes", get_counter("likes"))
+
+# ───────────────────────────────────────────
 #  SIDEBAR — controls, file upload, params
 # ───────────────────────────────────────────
 _run_detect = False
 _clear_win = False
 _save_btn = False
 
+if 'has_visited' not in S:
+    S.has_visited = True
+    S.visits_count = inc_counter('visits')
+else:
+    if 'visits_count' not in S:
+        S.visits_count = get_counter('visits')
+
+if 'likes_count' not in S:
+    S.likes_count = get_counter('likes')
+
 with st.sidebar:
     st.markdown("""
-    <div style='display:flex;align-items:center;gap:8px;padding:0 0 2px 0;margin-bottom:16px'>
-        <svg width="24" height="24" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <div style='display:flex;align-items:center;gap:12px;padding:0 0 2px 0;margin-bottom:16px'>
+        <svg width="48" height="48" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
           <rect width="36" height="36" rx="8" fill="#1a6b55"/>
           <polyline points="4,18 10,18 14,8 18,28 22,14 26,18 32,18" stroke="white" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" fill="none"/>
         </svg>
         <div>
-            <div style='font-size:13px;font-weight:700;color:inherit;line-height:1.1'>SynCapture</div>
-            <div style='font-size:9px;color:color-mix(in srgb,currentColor 65%,transparent)'>Synaptic Event Analysis</div>
+            <div style='font-size:26px;font-weight:700;color:inherit;line-height:1.1'>SynCapture</div>
+            <div style='font-size:18px;color:color-mix(in srgb,currentColor 65%,transparent)'>Synaptic Event Analysis</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    upload_label = 'Add ABF files' if not S.file_order else f'Add ABF files · {len(S.file_order)} loaded'
-    upload_icon = '▾' if S.show_uploader else '▸'
-    if st.button(f'{upload_icon} {upload_label}', key='toggle_uploader', use_container_width=True):
-        S.show_uploader = not S.show_uploader
-        st.rerun()
-    uploaded = []
-    if S.show_uploader:
-        uploaded = st.file_uploader('Upload ABF files', type=['abf'], accept_multiple_files=True, label_visibility='collapsed')
+    upload_expander_state = len(S.file_order) == 0
+    with st.expander("📂 Upload ABF Files", expanded=upload_expander_state):
+        st.markdown("<div style='height:0.2rem'></div>", unsafe_allow_html=True)
+        uploaded = st.file_uploader('Select or drag files here', type=['abf'], accept_multiple_files=True, label_visibility='collapsed')
+        
     if uploaded:
         loaded_new_file = False
         for f in uploaded:
@@ -1604,7 +1770,6 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f'{f.name}: {e}')
         if loaded_new_file:
-            S.show_uploader = False
             st.rerun()
 
     if S.file_order:
@@ -1628,7 +1793,11 @@ with st.sidebar:
         default_sweep = prev.get('sweep', sweeps_available[0])
 
         st.markdown("<p style='font-size:0.75rem;font-weight:600;color:color-mix(in srgb,currentColor 65%,transparent);text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Sweep & Window</p>", unsafe_allow_html=True)
-        sweep = st.selectbox('Sweep', sweeps_available, index=sweeps_available.index(default_sweep) if default_sweep in sweeps_available else 0, key=f'sweep_{S.active}')
+        sw_col1, sw_col2 = st.columns(2)
+        with sw_col1:
+            sweep = st.selectbox('Sweep', sweeps_available, index=sweeps_available.index(default_sweep) if default_sweep in sweeps_available else 0, key=f'sweep_{S.active}')
+        with sw_col2:
+            lp_hz = st.number_input('Low-pass (Hz)', min_value=0.0, value=float(prev.get('lp_hz', 1000.0)), step=50.0, help='Gaussian filter, 0 = off', key=f'lp_hz_{S.active}')
         sweep_df = df_all[df_all['sweep'] == sweep].copy()
         t_min, t_max = float(sweep_df['time_s'].min()), float(sweep_df['time_s'].max())
 
@@ -1637,7 +1806,6 @@ with st.sidebar:
             t_start = st.number_input('Start (s)', min_value=0.0, max_value=t_max, value=float(prev.get('t_start', t_min)), step=0.1, key=f't_start_{S.active}')
         with sc2:
             t_end = st.number_input('End (s)', min_value=0.0, max_value=t_max, value=float(prev.get('t_end', t_max)), step=0.1, key=f't_end_{S.active}')
-        lp_hz = st.number_input('Low-pass (Hz)', min_value=0.0, value=float(prev.get('lp_hz', 1000.0)), step=50.0, help='Gaussian filter, 0 = off', key=f'lp_hz_{S.active}')
 
         y_window_df = sweep_df[(sweep_df['time_s'] >= t_start) & (sweep_df['time_s'] <= t_end)].copy() if t_end > t_start else sweep_df.copy()
         if y_window_df.empty:
@@ -1677,16 +1845,16 @@ with st.sidebar:
             y_min, y_max = saved_y_min, saved_y_max
 
         st.markdown("<p style='font-size:0.75rem;font-weight:600;color:color-mix(in srgb,currentColor 65%,transparent);text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Detection</p>", unsafe_allow_html=True)
-        direction = st.selectbox('Direction', ['inward (EPSC)', 'outward (IPSC)'], index=['inward (EPSC)', 'outward (IPSC)'].index(prev.get('direction', 'inward (EPSC)')) if prev.get('direction', 'inward (EPSC)') in ['inward (EPSC)', 'outward (IPSC)'] else 0, key=f'direction_{S.active}')
-        baseline_pct = st.slider('Baseline %', 5, 50, int(prev.get('baseline_pct', 20)), 5, key=f'bl_pct_{S.active}')
+        direction = st.selectbox('Direction', ['inward (EPSC)', 'outward (IPSC)'], index=0, key='global_direction')
+        baseline_pct = st.slider('Baseline %', 5, 50, 20, 5, key='global_bl_pct', help="Initial percentage of the trace used to calculate the 0 pA baseline.")
 
         pc1, pc2 = st.columns(2)
         with pc1:
-            prominence = st.number_input('Prom. (pA)', min_value=0.5, value=float(prev.get('prominence', 8.0)), step=0.5, key=f'prom_{S.active}')
-            tau_rise = st.number_input('Tau Rise (ms)', min_value=0.1, value=float(prev.get('tau_rise', 0.5)), step=0.1, key=f'tau_rise_{S.active}')
+            prominence = st.number_input('Prom. (pA)', min_value=0.5, value=8.0, step=0.5, key='global_prominence', help="Minimum amplitude a peak must stand out above the surrounding background noise.")
+            tau_rise = st.number_input('Tau Rise (ms)', min_value=0.1, value=0.5, step=0.1, key='global_tau_rise', help="Time constant for the rising phase of the template waveform (e.g., 0.5 ms for AMPA, 1.0 ms for GABA).")
         with pc2:
-            distance_ms = st.number_input('Min IEI (ms)', min_value=0.1, value=float(prev.get('distance_ms', 5.0)), step=0.5, key=f'dist_{S.active}')
-            tau_decay = st.number_input('Tau Decay (ms)', min_value=0.5, value=float(prev.get('tau_decay', 3.0)), step=0.5, key=f'tau_decay_{S.active}')
+            distance_ms = st.number_input('Min IEI (ms)', min_value=0.1, value=5.0, step=0.5, key='global_distance_ms', help="Minimum inter-event interval; the shortest allowed time between two consecutive peaks.")
+            tau_decay = st.number_input('Tau Decay (ms)', min_value=0.5, value=3.0, step=0.5, key='global_tau_decay', help="Time constant for the decaying phase of the template waveform (e.g., 3.0 ms for AMPA, 8.0 ms for GABA).")
 
         st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
         bc1, bc2 = st.columns(2)
@@ -1716,6 +1884,54 @@ with st.sidebar:
     if not HAS_PYABF:
         st.divider()
         st.warning('⚠ pyabf not installed. Run: `pip install pyabf`')
+
+    st.markdown("""
+    <style>
+    [data-testid="stSidebar"] [data-testid="stButton"] button,
+    [data-testid="stSidebar"] [data-testid="stLinkButton"] a {
+        min-height: 2.2rem !important;
+        height: 2.2rem !important;
+        padding: 0.1rem 0.2rem !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stButton"] button p,
+    [data-testid="stSidebar"] [data-testid="stLinkButton"] a p {
+        margin: 0 !important;
+        padding: 0 !important;
+        line-height: 1 !important;
+    }
+    </style>
+    <div style='height:2rem'></div>
+    <p style='font-size:0.85rem;font-weight:600;color:inherit;margin-bottom:0.4rem'>💖 Support & Feedback</p>
+    """, unsafe_allow_html=True)
+    
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        if st.button('👍 Like', use_container_width=True, key='like_btn'):
+            record_event('likes')
+            get_counter.clear()  # clear cache so others see it soon
+            st.toast('Thank you for your support! ❤️', icon='🎉')
+            st.rerun()
+    with fc2:
+        st.link_button('⭐ GitHub', 'https://github.com/JingjingCheng/syncapture', use_container_width=True)
+        
+    fc3, fc4 = st.columns(2)
+    with fc3:
+        if st.button('☕ Buy me a coffee', use_container_width=True):
+            show_donation_dialog()
+    with fc4:
+        if st.button('💡 Suggestions', use_container_width=True):
+            show_suggestion_dialog()
+            
+    if st.query_params.get("admin") == "syncapture":
+        st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+        if st.button("📊 Open Admin Dashboard", type="primary", use_container_width=True):
+            show_admin_dashboard()
 
 # ───────────────────────────────────────────
 #  MAIN AREA — chart, metrics, events table
@@ -1790,24 +2006,23 @@ else:
 
     # ---- metrics row ----
     full_ev = S.events.get(S.active, pd.DataFrame())
-    if not full_ev.empty:
-        full_ev = normalize_events_frame(full_ev)
-        dur = max(0.001, t_end - t_start)
-        window_full_ev = full_ev[(full_ev['time_s'] >= t_start) & (full_ev['time_s'] <= t_end)]
-        sm = summary_from_events(window_full_ev, dur)
-        metric_items = [
-            ('Events', sm['n_events']),
-            ('Manual', sm['n_manual_events']),
-            ('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—'),
-            ('Mean |Amp|', f"{sm['amp_mean_pA']:.2f} pA" if pd.notna(sm['amp_mean_pA']) else '—'),
-            ('Med |Amp|', f"{sm['amp_median_pA']:.2f} pA" if pd.notna(sm['amp_median_pA']) else '—'),
-            ('Mean IEI', f"{sm['iei_mean_s']:.4f} s" if pd.notna(sm['iei_mean_s']) else '—'),
-        ]
-        metric_cards = ''.join(
-            f"<div class='metric-inline-card'><span class='metric-inline-label'>{label}</span><span class='metric-inline-value'>{value}</span></div>"
-            for label, value in metric_items
-        )
-        st.markdown(f"<div class='metric-inline-row'>{metric_cards}</div>", unsafe_allow_html=True)
+    full_ev = normalize_events_frame(full_ev)
+    dur = max(0.001, t_end - t_start)
+    window_full_ev = full_ev[(full_ev['time_s'] >= t_start) & (full_ev['time_s'] <= t_end)] if not full_ev.empty else pd.DataFrame(columns=EVENT_COLUMNS)
+    sm = summary_from_events(window_full_ev, dur)
+    metric_items = [
+        ('Events', sm['n_events']),
+        ('Manual', sm['n_manual_events']),
+        ('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—'),
+        ('Mean |Amp|', f"{sm['amp_mean_pA']:.2f} pA" if pd.notna(sm['amp_mean_pA']) else '—'),
+        ('Med |Amp|', f"{sm['amp_median_pA']:.2f} pA" if pd.notna(sm['amp_median_pA']) else '—'),
+        ('Mean IEI', f"{sm['iei_mean_s']:.4f} s" if pd.notna(sm['iei_mean_s']) else '—'),
+    ]
+    metric_cards = ''.join(
+        f"<div class='metric-inline-card'><span class='metric-inline-label'>{label}</span><span class='metric-inline-value'>{value}</span></div>"
+        for label, value in metric_items
+    )
+    st.markdown(f"<div class='metric-inline-row'>{metric_cards}</div>", unsafe_allow_html=True)
 
     # ---- editable event table ----
     if not S.events.get(S.active, pd.DataFrame()).empty:
@@ -1820,17 +2035,7 @@ else:
         editor_key = f'ev_table_{S.active}_{table_revision}'
         editor_source_key = f'{editor_key}_source'
         S[editor_source_key] = win_ev.copy()
-        panel_key = f'events_panel_open_{S.active}'
-        if panel_key not in S:
-            S[panel_key] = False
-        panel_icon = '▾' if S[panel_key] else '▸'
-        if st.button(
-            f'{panel_icon} 📋 {len(win_ev)} events in window · {total_acc} accepted · {total_manual} manual · {total_rej} rejected total',
-            key=f'events_panel_toggle_{S.active}',
-            use_container_width=True,
-        ):
-            S[panel_key] = not S[panel_key]
-        if S[panel_key]:
+        with st.expander(f'📋 {len(win_ev)} events in window · {total_acc} accepted · {total_manual} manual · {total_rej} rejected total', expanded=False):
             st.data_editor(
                 win_ev, num_rows='dynamic', use_container_width=True, key=editor_key,
                 column_config={
@@ -1850,298 +2055,162 @@ else:
 #  EXPORT SECTION
 # ───────────────────────────────────────────
 if S.records:
-    st.divider()
-    st.markdown(f'**📊 Summary & Export ({len(S.records)} files)**')
-    df_rec = pd.DataFrame(S.records).sort_values(['group', 'individual', 'cell_id'])
-    st.dataframe(df_rec, use_container_width=True, height=200)
-    clean = df_rec[df_rec['status'] == 'accepted'].copy()
-    if not clean.empty:
-        def sem(s):
-            s = pd.Series(s).dropna()
-            return s.std(ddof=1) / np.sqrt(len(s)) if len(s) > 1 else np.nan
+    with st.expander(f'📊 Summary & Export ({len(S.records)} files)', expanded=False):
+        df_rec = pd.DataFrame(S.records).sort_values(['group', 'individual', 'cell_id'])
+        st.dataframe(df_rec, use_container_width=True, height=200)
+        clean = df_rec[df_rec['status'] == 'accepted'].copy()
+        if not clean.empty:
+            def sem(s):
+                s = pd.Series(s).dropna()
+                return s.std(ddof=1) / np.sqrt(len(s)) if len(s) > 1 else np.nan
 
-        summary = clean.groupby('group').agg(
-            n_cells=('cell_id', 'count'),
-            amp_mean=('amp_mean_pA', 'mean'), amp_sem=('amp_mean_pA', sem),
-            freq_mean=('freq_hz', 'mean'), freq_sem=('freq_hz', sem),
-        ).reset_index()
-        all_groups = sorted(clean['group'].unique())
-        figure_style = get_figure_style()
-        amp_y_min_default, amp_y_max_default = infer_y_range(clean['amp_mean_pA'].dropna(), pad_frac=0.12)
-        freq_y_min_default, freq_y_max_default = infer_y_range(clean['freq_hz'].dropna(), pad_frac=0.12)
-        if not S.figure_style:
-            figure_style['amp_y_min'] = min(0.0, float(amp_y_min_default))
-            figure_style['amp_y_max'] = float(amp_y_max_default)
-            figure_style['freq_y_min'] = min(0.0, float(freq_y_min_default))
-            figure_style['freq_y_max'] = float(freq_y_max_default)
+            summary = clean.groupby('group').agg(
+                n_cells=('cell_id', 'count'),
+                amp_mean=('amp_mean_pA', 'mean'), amp_sem=('amp_mean_pA', sem),
+                freq_mean=('freq_hz', 'mean'), freq_sem=('freq_hz', sem),
+            ).reset_index()
+            all_groups = sorted(clean['group'].unique())
+            figure_style = get_figure_style()
+            amp_y_min_default, amp_y_max_default = infer_y_range(clean['amp_mean_pA'].dropna(), pad_frac=0.12)
+            freq_y_min_default, freq_y_max_default = infer_y_range(clean['freq_hz'].dropna(), pad_frac=0.12)
+            if not S.figure_style:
+                figure_style['amp_y_min'] = min(0.0, float(amp_y_min_default))
+                figure_style['amp_y_max'] = float(amp_y_max_default)
+                figure_style['freq_y_min'] = min(0.0, float(freq_y_min_default))
+                figure_style['freq_y_max'] = float(freq_y_max_default)
 
-        with st.expander('Figure Style', expanded=True):
-            st.markdown("<div class='style-section-title'>Text & Font</div>", unsafe_allow_html=True)
-            text_cols = st.columns([1.4, 0.8, 0.8, 0.8])
-            with text_cols[0]:
-                fonts = ['Arial', 'Helvetica', 'DejaVu Sans', 'Times New Roman']
-                figure_style['font_family'] = st.selectbox(
-                    'Font family',
-                    fonts,
-                    index=fonts.index(figure_style['font_family']) if figure_style['font_family'] in fonts else 0,
-                    key='fig_font_family',
-                    help='Font used for titles, axis labels, tick labels, and exported figures.',
-                )
-            with text_cols[1]:
-                figure_style['font_size'] = st.number_input(
-                    'Figure title size',
-                    min_value=7,
-                    max_value=24,
-                    value=int(figure_style['font_size']),
-                    step=1,
-                    key='fig_font_size',
-                    help='Title text size for trace and summary figures.',
-                )
-            with text_cols[2]:
-                figure_style['axis_label_size'] = st.number_input(
-                    'Axis label size',
-                    min_value=7,
-                    max_value=24,
-                    value=int(figure_style['axis_label_size']),
-                    step=1,
-                    key='fig_axis_label_size',
-                    help='X/Y axis label text size.',
-                )
-            with text_cols[3]:
-                figure_style['tick_label_size'] = st.number_input(
-                    'Tick label size',
-                    min_value=6,
-                    max_value=20,
-                    value=int(figure_style['tick_label_size']),
-                    step=1,
-                    key='fig_tick_label_size',
-                    help='Number and group tick label text size.',
-                )
+            with st.expander('Figure Style', expanded=True):
+                style_tabs = st.tabs(['Text & Axes', 'Bars & Points', 'Y-Axis Ranges', 'Group Colors'])
+                
+                with style_tabs[0]:
+                    t_cols = st.columns([1.5, 1, 1, 1, 1, 1])
+                    with t_cols[0]:
+                        fonts = ['Arial', 'Helvetica', 'DejaVu Sans', 'Times New Roman']
+                        figure_style['font_family'] = st.selectbox('Font', fonts, index=fonts.index(figure_style['font_family']) if figure_style['font_family'] in fonts else 0, key='fig_font_family')
+                    with t_cols[1]:
+                        figure_style['font_size'] = st.number_input('Title Size', min_value=7, max_value=24, value=int(figure_style['font_size']), step=1, key='fig_font_size')
+                    with t_cols[2]:
+                        figure_style['axis_label_size'] = st.number_input('Axis Lbl', min_value=7, max_value=24, value=int(figure_style['axis_label_size']), step=1, key='fig_axis_label_size')
+                    with t_cols[3]:
+                        figure_style['tick_label_size'] = st.number_input('Tick Lbl', min_value=6, max_value=20, value=int(figure_style['tick_label_size']), step=1, key='fig_tick_label_size')
+                    with t_cols[4]:
+                        figure_style['axis_line_width'] = st.number_input('Axis Line', min_value=0.1, max_value=10.0, value=float(figure_style['axis_line_width']), step=0.1, key='fig_axis_line_width')
+                    with t_cols[5]:
+                        figure_style['x_label_rotation'] = st.number_input('X-Ang', min_value=-360, max_value=360, value=int(figure_style['x_label_rotation']), step=1, key='fig_x_label_rotation')
 
-            st.markdown("<div class='style-section-title'>Axes</div>", unsafe_allow_html=True)
-            axis_cols = st.columns(2)
-            with axis_cols[0]:
-                figure_style['axis_line_width'] = st.slider(
-                    'Axis line width',
-                    0.5,
-                    4.0,
-                    float(figure_style['axis_line_width']),
-                    0.1,
-                    key='fig_axis_line_width',
-                    help='Thickness of the x/y axis lines.',
-                )
-            with axis_cols[1]:
-                figure_style['x_label_rotation'] = st.slider(
-                    'Group label angle',
-                    -45,
-                    45,
-                    int(figure_style['x_label_rotation']),
-                    5,
-                    key='fig_x_label_rotation',
-                    help='Rotation angle for group names on the summary figure x-axis.',
-                )
-            st.markdown("<div class='style-section-title'>Summary Bars & Points</div>", unsafe_allow_html=True)
-            mark_cols = st.columns([1, 1, 1, 1])
-            with mark_cols[0]:
-                figure_style['bar_width'] = st.slider(
-                    'Mean bar width',
-                    0.05,
-                    0.95,
-                    float(figure_style['bar_width']),
-                    0.05,
-                    key='fig_bar_width',
-                    help='Width of the group mean bars in the summary figure.',
-                )
-            with mark_cols[1]:
-                figure_style['bar_line_width'] = st.slider(
-                    'Bar outline width',
-                    0.0,
-                    4.0,
-                    float(figure_style['bar_line_width']),
-                    0.2,
-                    key='fig_bar_line_width',
-                    help='Thickness of the border around summary bars.',
-                )
-            with mark_cols[2]:
-                figure_style['error_line_width'] = st.slider(
-                    'SEM error bar width',
-                    0.5,
-                    4.0,
-                    float(figure_style['error_line_width']),
-                    0.1,
-                    key='fig_error_line_width',
-                    help='Line thickness for SEM error bars.',
-                )
-            with mark_cols[3]:
-                figure_style['point_size'] = st.slider(
-                    'Individual point size',
-                    10,
-                    90,
-                    int(figure_style['point_size']),
-                    2,
-                    key='fig_point_size',
-                    help='Marker size for individual cell values overlaid on summary bars.',
-                )
+                with style_tabs[1]:
+                    m_cols = st.columns([1, 1, 1, 1, 1.2, 1])
+                    with m_cols[0]:
+                        figure_style['bar_width'] = st.number_input('Bar W', min_value=0.01, max_value=2.0, value=float(figure_style['bar_width']), step=0.05, key='fig_bar_width')
+                    with m_cols[1]:
+                        figure_style['bar_line_width'] = st.number_input('Bar Line W', min_value=0.0, max_value=10.0, value=float(figure_style['bar_line_width']), step=0.1, key='fig_bar_line_width')
+                    with m_cols[2]:
+                        figure_style['error_line_width'] = st.number_input('Err Line W', min_value=0.1, max_value=10.0, value=float(figure_style['error_line_width']), step=0.1, key='fig_error_line_width')
+                    with m_cols[3]:
+                        figure_style['point_size'] = st.number_input('Point Size', min_value=1, max_value=200, value=int(figure_style['point_size']), step=1, key='fig_point_size')
+                    with m_cols[4]:
+                        st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
+                        show_names = st.checkbox('Ind Legend', value=bool(figure_style.get('show_individual_names')), key='fig_show_individual_names')
+                        figure_style['show_individual_names'] = show_names
+                    with m_cols[5]:
+                        figure_style['individual_label_size'] = st.number_input('Leg Text', min_value=5, max_value=18, value=int(figure_style['individual_label_size']), step=1, key='fig_individual_label_size', disabled=not bool(figure_style['show_individual_names']))
 
-            st.markdown("<div class='style-section-title'>Individual Legend</div>", unsafe_allow_html=True)
-            legend_cols = st.columns([1.1, 1, 2])
-            with legend_cols[0]:
-                show_names = st.checkbox(
-                    'Show individual legend',
-                    value=bool(figure_style.get('show_individual_names')),
-                    key='fig_show_individual_names',
-                    help='Show a legend mapping each individual to its point color.',
-                )
-                figure_style['show_individual_names'] = show_names
-            with legend_cols[1]:
-                figure_style['individual_label_size'] = st.number_input(
-                    'Legend text size',
-                    min_value=5,
-                    max_value=18,
-                    value=int(figure_style['individual_label_size']),
-                    step=1,
-                    key='fig_individual_label_size',
-                    disabled=not bool(figure_style['show_individual_names']),
-                    help='Text size for individual names in the summary figure legend.',
-                )
+                with style_tabs[2]:
+                    r_cols = st.columns(6)
+                    with r_cols[0]:
+                        st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
+                        figure_style['amp_y_auto'] = st.checkbox('Amp Auto Y', value=bool(figure_style.get('amp_y_auto', True)), key='fig_amp_y_auto')
+                    with r_cols[1]:
+                        figure_style['amp_y_min'] = st.number_input('Amp Y min', value=float(figure_style.get('amp_y_min', amp_y_min_default)), step=1.0, key='fig_amp_y_min', disabled=bool(figure_style['amp_y_auto']))
+                    with r_cols[2]:
+                        figure_style['amp_y_max'] = st.number_input('Amp Y max', value=float(figure_style.get('amp_y_max', amp_y_max_default)), step=1.0, key='fig_amp_y_max', disabled=bool(figure_style['amp_y_auto']))
+                    with r_cols[3]:
+                        st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
+                        figure_style['freq_y_auto'] = st.checkbox('Freq Auto Y', value=bool(figure_style.get('freq_y_auto', True)), key='fig_freq_y_auto')
+                    with r_cols[4]:
+                        figure_style['freq_y_min'] = st.number_input('Freq Y min', value=float(figure_style.get('freq_y_min', freq_y_min_default)), step=0.1, key='fig_freq_y_min', disabled=bool(figure_style['freq_y_auto']))
+                    with r_cols[5]:
+                        figure_style['freq_y_max'] = st.number_input('Freq Y max', value=float(figure_style.get('freq_y_max', freq_y_max_default)), step=0.1, key='fig_freq_y_max', disabled=bool(figure_style['freq_y_auto']))
 
-            st.markdown("<div class='style-section-title'>Y-Axis Ranges</div>", unsafe_allow_html=True)
-            range_panel_cols = st.columns(2)
-            with range_panel_cols[0]:
-                st.markdown("<div class='style-subsection-title'>Amplitude Summary Panel</div>", unsafe_allow_html=True)
-                figure_style['amp_y_auto'] = st.checkbox(
-                    'Auto-scale amplitude Y-axis',
-                    value=bool(figure_style.get('amp_y_auto', True)),
-                    key='fig_amp_y_auto',
-                    help='Let the amplitude summary panel choose its Y-axis range from the data.',
-                )
-                amp_limit_cols = st.columns(2)
-                with amp_limit_cols[0]:
-                    figure_style['amp_y_min'] = st.number_input(
-                        'Amplitude Y min (pA)',
-                        value=float(figure_style.get('amp_y_min', amp_y_min_default)),
-                        step=1.0,
-                        key='fig_amp_y_min',
-                        disabled=bool(figure_style['amp_y_auto']),
-                        help='Manual minimum for the amplitude summary panel Y-axis.',
-                    )
-                with amp_limit_cols[1]:
-                    figure_style['amp_y_max'] = st.number_input(
-                        'Amplitude Y max (pA)',
-                        value=float(figure_style.get('amp_y_max', amp_y_max_default)),
-                        step=1.0,
-                        key='fig_amp_y_max',
-                        disabled=bool(figure_style['amp_y_auto']),
-                        help='Manual maximum for the amplitude summary panel Y-axis.',
-                    )
+                with style_tabs[3]:
+                    c_cols = st.columns(min(8, max(1, len(all_groups))))
+                    group_colors = group_colors_for(all_groups)
+                    for i, group in enumerate(all_groups):
+                        with c_cols[i % len(c_cols)]:
+                            picked = st.color_picker(f'{group}', value=group_colors[group], key=group_color_key(group))
+                            S.group_colors[group] = picked
+                            group_colors[group] = picked
 
-            with range_panel_cols[1]:
-                st.markdown("<div class='style-subsection-title'>Frequency Summary Panel</div>", unsafe_allow_html=True)
-                figure_style['freq_y_auto'] = st.checkbox(
-                    'Auto-scale frequency Y-axis',
-                    value=bool(figure_style.get('freq_y_auto', True)),
-                    key='fig_freq_y_auto',
-                    help='Let the frequency summary panel choose its Y-axis range from the data.',
-                )
-                freq_limit_cols = st.columns(2)
-                with freq_limit_cols[0]:
-                    figure_style['freq_y_min'] = st.number_input(
-                        'Frequency Y min (Hz)',
-                        value=float(figure_style.get('freq_y_min', freq_y_min_default)),
-                        step=0.1,
-                        key='fig_freq_y_min',
-                        disabled=bool(figure_style['freq_y_auto']),
-                        help='Manual minimum for the frequency summary panel Y-axis.',
-                    )
-                with freq_limit_cols[1]:
-                    figure_style['freq_y_max'] = st.number_input(
-                        'Frequency Y max (Hz)',
-                        value=float(figure_style.get('freq_y_max', freq_y_max_default)),
-                        step=0.1,
-                        key='fig_freq_y_max',
-                        disabled=bool(figure_style['freq_y_auto']),
-                        help='Manual maximum for the frequency summary panel Y-axis.',
-                    )
+            S.figure_style = figure_style
+            fig_sum = make_summary_figure(clean, summary, figure_style, group_colors)
+            fig_sum_bytes = fig_to_png_bytes(fig_sum, tight=False)
+            st.image(fig_sum_bytes, width='stretch')
+            plt.close(fig_sum)
 
-            st.markdown("<div class='style-section-title'>Group Colors</div>", unsafe_allow_html=True)
-            color_cols = st.columns(min(6, max(1, len(all_groups))))
-            group_colors = group_colors_for(all_groups)
-            for i, group in enumerate(all_groups):
-                with color_cols[i % len(color_cols)]:
-                    picked = st.color_picker(f'Group color: {group}', value=group_colors[group], key=group_color_key(group))
-                    S.group_colors[group] = picked
-                    group_colors[group] = picked
+            def prism_df(col):
+                max_len = int(clean.groupby('group')[col].count().max())
+                out = {}
+                for g in all_groups:
+                    vals = clean[clean['group'] == g][col].reset_index(drop=True)
+                    out[g] = vals.reindex(range(max_len))
+                return pd.DataFrame(out)
 
-        S.figure_style = figure_style
-        fig_sum = make_summary_figure(clean, summary, figure_style, group_colors)
-        fig_sum_bytes = fig_to_png_bytes(fig_sum, tight=False)
-        st.image(fig_sum_bytes, width='stretch')
-        plt.close(fig_sum)
+            prism_amp = prism_df('amp_mean_pA')
+            prism_freq = prism_df('freq_hz')
 
-        def prism_df(col):
-            max_len = int(clean.groupby('group')[col].count().max())
-            out = {}
-            for g in all_groups:
-                vals = clean[clean['group'] == g][col].reset_index(drop=True)
-                out[g] = vals.reindex(range(max_len))
-            return pd.DataFrame(out)
+            event_rows = []
+            for rec in S.records:
+                ev = S.events.get(rec['file_name'], pd.DataFrame())
+                if not ev.empty:
+                    ev = ev.copy()
+                    ev['file_name'] = rec['file_name']
+                    ev['cell_id'] = rec['cell_id']
+                    ev['group'] = rec['group']
+                    ev['individual'] = rec['individual']
+                    event_rows.append(ev)
+            events_all = pd.concat(event_rows, ignore_index=True) if event_rows else pd.DataFrame()
 
-        prism_amp = prism_df('amp_mean_pA')
-        prism_freq = prism_df('freq_hz')
+            img_bytes = {}
+            for rec in S.records:
+                fname = rec['file_name']
+                fdata_exp = S.files.get(fname)
+                if not fdata_exp:
+                    continue
+                df_all2 = fdata_exp['df']
+                sett = S.settings.get(fname, {})
+                sw = sett.get('sweep', df_all2['sweep'].iloc[0])
+                ts = sett.get('t_start', float(df_all2['time_s'].min()))
+                te = sett.get('t_end', float(df_all2['time_s'].max()))
+                sub_f = df_all2[(df_all2['sweep'] == sw) & (df_all2['time_s'] >= ts) & (df_all2['time_s'] <= te)].copy()
+                lp = sett.get('lp_hz', 0)
+                if lp > 0 and fdata_exp['meta']['sample_rate_hz'] > 0 and len(sub_f) > 20:
+                    sub_f['signal'] = gaussian_lowpass(sub_f['signal'].to_numpy(), lp, fdata_exp['meta']['sample_rate_hz'])
+                ev_f = S.events.get(fname, pd.DataFrame())
+                if not ev_f.empty:
+                    ev_f = normalize_events_frame(ev_f)
+                    ev_f = ev_f[(ev_f['time_s'] >= ts) & (ev_f['time_s'] <= te)]
+                fig_f = make_trace_figure(sub_f, ev_f, sett, fname, rec, figure_style)
+                img_bytes[fname] = fig_to_png_bytes(fig_f)
+                plt.close(fig_f)
 
-        event_rows = []
-        for rec in S.records:
-            ev = S.events.get(rec['file_name'], pd.DataFrame())
-            if not ev.empty:
-                ev = ev.copy()
-                ev['file_name'] = rec['file_name']
-                ev['cell_id'] = rec['cell_id']
-                ev['group'] = rec['group']
-                ev['individual'] = rec['individual']
-                event_rows.append(ev)
-        events_all = pd.concat(event_rows, ignore_index=True) if event_rows else pd.DataFrame()
-
-        img_bytes = {}
-        for rec in S.records:
-            fname = rec['file_name']
-            fdata_exp = S.files.get(fname)
-            if not fdata_exp:
-                continue
-            df_all2 = fdata_exp['df']
-            sett = S.settings.get(fname, {})
-            sw = sett.get('sweep', df_all2['sweep'].iloc[0])
-            ts = sett.get('t_start', float(df_all2['time_s'].min()))
-            te = sett.get('t_end', float(df_all2['time_s'].max()))
-            sub_f = df_all2[(df_all2['sweep'] == sw) & (df_all2['time_s'] >= ts) & (df_all2['time_s'] <= te)].copy()
-            lp = sett.get('lp_hz', 0)
-            if lp > 0 and fdata_exp['meta']['sample_rate_hz'] > 0 and len(sub_f) > 20:
-                sub_f['signal'] = gaussian_lowpass(sub_f['signal'].to_numpy(), lp, fdata_exp['meta']['sample_rate_hz'])
-            ev_f = S.events.get(fname, pd.DataFrame())
-            if not ev_f.empty:
-                ev_f = normalize_events_frame(ev_f)
-                ev_f = ev_f[(ev_f['time_s'] >= ts) & (ev_f['time_s'] <= te)]
-            fig_f = make_trace_figure(sub_f, ev_f, sett, fname, rec, figure_style)
-            img_bytes[fname] = fig_to_png_bytes(fig_f)
-            plt.close(fig_f)
-
-        zbuf = io.BytesIO()
-        with zipfile.ZipFile(zbuf, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr('per_cell_summary.csv', df_rec.to_csv(index=False))
-            zf.writestr('group_mean_sem.csv', summary.to_csv(index=False))
-            zf.writestr('Prism_amplitude_pA.csv', prism_amp.to_csv(index=False))
-            zf.writestr('Prism_frequency_Hz.csv', prism_freq.to_csv(index=False))
-            zf.writestr('figures/summary_prism_style.png', fig_sum_bytes)
-            if not events_all.empty:
-                zf.writestr('all_events.csv', events_all.to_csv(index=False))
-            for fname, ibytes in img_bytes.items():
-                zf.writestr(f'traces/{Path(fname).stem}_detected.png', ibytes)
-            zf.writestr('review_state.json', json.dumps(json_safe(S.records), indent=2))
-        export_cols = st.columns([1.15, 1.0, 1.0, 1.0, 3.2], gap='small')
-        with export_cols[0]:
-            st.download_button('Download ZIP', data=zbuf.getvalue(), file_name='syncapture_exports.zip', mime='application/zip', type='primary')
-        with export_cols[1]:
-            st.download_button('Amplitude CSV', prism_amp.to_csv(index=False).encode(), file_name='Prism_amplitude_pA.csv', mime='text/csv')
-        with export_cols[2]:
-            st.download_button('Frequency CSV', prism_freq.to_csv(index=False).encode(), file_name='Prism_frequency_Hz.csv', mime='text/csv')
-        with export_cols[3]:
-            st.download_button('Summary CSV', df_rec.to_csv(index=False).encode(), file_name='per_cell_summary.csv', mime='text/csv')
+            zbuf = io.BytesIO()
+            with zipfile.ZipFile(zbuf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr('per_cell_summary.csv', df_rec.to_csv(index=False))
+                zf.writestr('group_mean_sem.csv', summary.to_csv(index=False))
+                zf.writestr('Prism_amplitude_pA.csv', prism_amp.to_csv(index=False))
+                zf.writestr('Prism_frequency_Hz.csv', prism_freq.to_csv(index=False))
+                zf.writestr('figures/summary_prism_style.png', fig_sum_bytes)
+                if not events_all.empty:
+                    zf.writestr('all_events.csv', events_all.to_csv(index=False))
+                for fname, ibytes in img_bytes.items():
+                    zf.writestr(f'traces/{Path(fname).stem}_detected.png', ibytes)
+                zf.writestr('review_state.json', json.dumps(json_safe(S.records), indent=2))
+            export_cols = st.columns([1.15, 1.0, 1.0, 1.0, 3.2], gap='small')
+            with export_cols[0]:
+                st.download_button('Download ZIP', data=zbuf.getvalue(), file_name='syncapture_exports.zip', mime='application/zip', type='primary')
+            with export_cols[1]:
+                st.download_button('Amplitude CSV', prism_amp.to_csv(index=False).encode(), file_name='Prism_amplitude_pA.csv', mime='text/csv')
+            with export_cols[2]:
+                st.download_button('Frequency CSV', prism_freq.to_csv(index=False).encode(), file_name='Prism_frequency_Hz.csv', mime='text/csv')
+            with export_cols[3]:
+                st.download_button('Summary CSV', df_rec.to_csv(index=False).encode(), file_name='per_cell_summary.csv', mime='text/csv')
