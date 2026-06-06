@@ -1910,7 +1910,12 @@ with st.sidebar:
 
     with st.expander("🎵 Background Music (007 Theme)", expanded=False):
         st.markdown("<p style='font-size:0.75rem;color:gray;margin-bottom:0.4rem;line-height:1.2'>Listen to the James Bond Theme or paste your own MP3 URL! (Maintains playback position across uploads/actions)</p>", unsafe_allow_html=True)
-        music_url = st.text_input("Audio URL", "https://archive.org/download/tvtunes_4619/James%20Bond.mp3", label_visibility="collapsed")
+        raw_music_url = st.text_input("Audio URL", "https://archive.org/download/tvtunes_4619/James%20Bond.mp3", label_visibility="collapsed")
+        
+        # Auto-convert Archive.org details page links to direct download links
+        music_url = raw_music_url.strip()
+        if "archive.org/details/" in music_url:
+            music_url = music_url.replace("archive.org/details/", "archive.org/download/")
         
         player_html = f"""
         <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 0.8rem; color: #374151; display: flex; flex-direction: column; gap: 8px;">
