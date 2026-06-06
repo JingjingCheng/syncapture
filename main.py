@@ -1906,7 +1906,15 @@ with st.sidebar:
         line-height: 1 !important;
     }
     </style>
-    <div style='height:2rem'></div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("🎵 Ambient Music", expanded=False):
+        st.markdown("<p style='font-size:0.75rem;color:gray;margin-bottom:0.4rem;line-height:1.2'>Listen to relaxing lo-fi tunes while analyzing your electrophysiology data.</p>", unsafe_allow_html=True)
+        music_url = st.text_input("Audio URL", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3", label_visibility="collapsed")
+        st.audio(music_url, format="audio/mp3", loop=True)
+
+    st.markdown("""
+    <div style='height:1rem'></div>
     <p style='font-size:0.85rem;font-weight:600;color:inherit;margin-bottom:0.4rem'>💖 Support & Feedback</p>
     """, unsafe_allow_html=True)
     
