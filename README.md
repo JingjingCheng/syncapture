@@ -14,7 +14,7 @@
 ### Key Features
 
 - 📂 **Multi-file Batch Processing**: Simultaneously upload and switch between multiple `.abf` files.
-- 🔍 **Automated Event Detection**: High-performance mEPSC/mIPSC detection powered by `scipy.signal.find_peaks`.
+- 🔍 **Automated Event Detection**: High-performance mEPSC/mIPSC detection powered by `scipy.signal.find_peaks`, and **Action Potential** detection & feature extraction using the `eFEL` library.
 - 📊 **Interactive WebGL Plots**: Rendered via Plotly WebGL (`go.Scattergl`), supporting smooth dragging, scrolling, custom zooming, panning, and instant double-click resetting.
 - ✅ **Manual Review & Annotation**: Curate individual detected events by accepting or rejecting them directly in an editable event table.
 - 📁 **Unified Exports**: Download all exports in a single structured ZIP file containing Prism-ready CSVs, high-quality trace PNGs, and a global summary.
@@ -91,6 +91,7 @@ You can deploy this application for free on [Streamlit Community Cloud](https://
 | `matplotlib` | High-quality static rendering for trace PNG exports |
 | `numpy` | High-performance numerical computations |
 | `plotly` | Interactive WebGL-accelerated chart plotting |
+| `efel` | Electrophys Feature Extraction Library (eFEL) for action potential features |
 
 ### Project Structure
 
@@ -111,7 +112,7 @@ syncapture/
 ### 功能特性
 
 - 📂 **多文件批量处理**：支持同时上传多个 `.abf` 文件，并在文件之间便捷切换。
-- 🔍 **自动事件检测**：基于 `scipy.signal.find_peaks` 的高性能 mEPSC/mIPSC 自动检测算法。
+- 🔍 **自动事件检测**：基于 `scipy.signal.find_peaks` 的高性能 mEPSC/mIPSC 自动检测算法，以及基于 `eFEL` 库的 **动作电位（Action Potential）** 自动检测与特征提取。
 - 📊 **交互式 WebGL 图表**：基于 Plotly WebGL (`go.Scattergl`) 渲染，支持极速拖拽缩放、滚轮缩放、双击重置和悬停提示。
 - ✅ **人工审核**：可在编辑表格中直接勾选或修改每个检测事件的 `accepted` 状态，图表数据实时更新。
 - 📁 **一键整合导出**：支持下载一键打包的 ZIP 文件，内含 Prism 格式 CSV、高清晰度轨迹图 PNG 以及全局统计报告。
@@ -188,6 +189,7 @@ streamlit run main.py
 | `matplotlib` | 静态 trace PNG 导出渲染 |
 | `numpy` | 矩阵与高性能数值计算 |
 | `plotly` | 交互式 WebGL 加速图表绘制 |
+| `efel` | 细胞电生理特征提取库 (eFEL)，用于提取动作电位特征 |
 
 ### 项目结构
 
