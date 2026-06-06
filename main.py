@@ -1056,6 +1056,64 @@ def create_mepsc_template(tau_rise_ms=0.5, tau_decay_ms=3.0, fs_hz=10000, length
     return template / np.max(template)
 
 def detect_synaptic_events(trace, time_s, direction, prominence, distance_ms, baseline_pct=20, tau_rise=0.5, tau_decay=3.0):
+    if direction == 'Action Potential':
+        import efel
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if hasattr(efel, 'set_threshold'):
+                efel.set_threshold(prominence)
+            else:
+                efel.setThreshold(prominence)
+            trace_data = {
+                'T': time_s * 1000.0,
+                'V': trace,
+                'stim_start': [time_s[0] * 1000.0],
+                'stim_end': [time_s[-1] * 1000.0]
+            }
+            feature_list = ['peak_time', 'peak_voltage', 'AP_amplitude', 'AP_width', 'AP_begin_voltage']
+            results = efel.get_feature_values([trace_data], feature_list)
+            
+        if results and results[0].get('peak_time') is not None:
+            res = results[0]
+            peak_times_s = res['peak_time'] / 1000.0
+            
+            valid_idx = []
+            if len(peak_times_s) > 0:
+                valid_idx.append(0)
+                for i in range(1, len(peak_times_s)):
+                    if (peak_times_s[i] - peak_times_s[valid_idx[-1]]) * 1000.0 >= distance_ms:
+                        valid_idx.append(i)
+            
+            valid_idx = np.array(valid_idx)
+            if len(valid_idx) == 0:
+                return pd.DataFrame(columns=['time_s', 'amplitude_pA', 'prominence', 'iei_s', 'accepted'])
+                
+            peak_times_s = peak_times_s[valid_idx]
+            n_base = max(1, int(len(trace) * baseline_pct / 100))
+            baseline = np.median(trace[:n_base])
+            
+            peak_voltages = res['peak_voltage'][valid_idx]
+            amplitude_pA = peak_voltages - baseline
+            
+            if res.get('AP_amplitude') is not None and len(res['AP_amplitude']) == len(res['peak_time']):
+                ap_amplitudes = res['AP_amplitude'][valid_idx]
+            else:
+                ap_amplitudes = peak_voltages - prominence
+            
+            iei = np.diff(peak_times_s)
+            iei = np.concatenate([[np.nan], iei])
+            
+            return pd.DataFrame({
+                'time_s': peak_times_s,
+                'amplitude_pA': amplitude_pA,
+                'prominence': ap_amplitudes,
+                'iei_s': iei,
+                'accepted': True,
+            })
+        else:
+            return pd.DataFrame(columns=['time_s', 'amplitude_pA', 'prominence', 'iei_s', 'accepted'])
+
     # Baseline subtraction
     n_base = max(1, int(len(trace) * baseline_pct / 100))
     baseline = np.median(trace[:n_base])
@@ -1323,7 +1381,12 @@ sync_plotly_chart_state()
 def make_trace_figure(sub, events_df, settings, file_name, record=None, figure_style=None):
     figure_style = figure_style or get_figure_style()
     direction = settings.get('direction', 'inward (EPSC)')
-    marker_color = '#1a6b55' if 'EPSC' in direction else '#b91c1c'
+    if 'EPSC' in direction:
+        marker_color = '#1a6b55'
+    elif 'IPSC' in direction:
+        marker_color = '#b91c1c'
+    else:
+        marker_color = '#7c3aed'
     fig, ax = plt.subplots(figsize=(11, 3.5))
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
@@ -1386,7 +1449,12 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name, record=None, f
     """Interactive Plotly figure with drag-zoom, box-select, scroll-zoom and double-click reset."""
     figure_style = figure_style or get_figure_style()
     direction = settings.get('direction', 'inward (EPSC)')
-    marker_color = '#1a6b55' if 'EPSC' in direction else '#b91c1c'
+    if 'EPSC' in direction:
+        marker_color = '#1a6b55'
+    elif 'IPSC' in direction:
+        marker_color = '#b91c1c'
+    else:
+        marker_color = '#7c3aed'
     xaxis_revision = f"{file_name}:{settings.get('sweep')}:{settings.get('t_start')}:{settings.get('t_end')}"
     yaxis_revision = f"{file_name}:{settings.get('y_min')}:{settings.get('y_max')}"
     fig = go.Figure()
@@ -1890,16 +1958,23 @@ with st.sidebar:
             y_min, y_max = saved_y_min, saved_y_max
 
         st.markdown("<p style='font-size:0.75rem;font-weight:600;color:color-mix(in srgb,currentColor 65%,transparent);text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Detection</p>", unsafe_allow_html=True)
-        direction = st.selectbox('Direction', ['inward (EPSC)', 'outward (IPSC)'], index=0, key='global_direction')
+        direction = st.selectbox('Direction', ['inward (EPSC)', 'outward (IPSC)', 'Action Potential'], index=0, key='global_direction')
         baseline_pct = st.slider('Baseline %', 5, 50, 20, 5, key='global_bl_pct', help="Initial percentage of the trace used to calculate the 0 pA baseline.")
 
         pc1, pc2 = st.columns(2)
         with pc1:
-            prominence = st.number_input('Prom. (pA)', min_value=0.5, value=8.0, step=0.5, key='global_prominence', help="Minimum amplitude a peak must stand out above the surrounding background noise.")
-            tau_rise = st.number_input('Tau Rise (ms)', min_value=0.1, value=0.5, step=0.1, key='global_tau_rise', help="Time constant for the rising phase of the template waveform (e.g., 0.5 ms for AMPA, 1.0 ms for GABA).")
+            if direction == 'Action Potential':
+                prominence = st.number_input('Spike Threshold (mV)', min_value=-150.0, max_value=100.0, value=-20.0, step=1.0, key='global_ap_threshold', help="Voltage threshold (mV) above which a spike is detected.")
+                tau_rise = 0.5
+            else:
+                prominence = st.number_input('Prom. (pA)', min_value=0.5, value=8.0, step=0.5, key='global_prominence', help="Minimum amplitude a peak must stand out above the surrounding background noise.")
+                tau_rise = st.number_input('Tau Rise (ms)', min_value=0.1, value=0.5, step=0.1, key='global_tau_rise', help="Time constant for the rising phase of the template waveform (e.g., 0.5 ms for AMPA, 1.0 ms for GABA).")
         with pc2:
             distance_ms = st.number_input('Min IEI (ms)', min_value=0.1, value=5.0, step=0.5, key='global_distance_ms', help="Minimum inter-event interval; the shortest allowed time between two consecutive peaks.")
-            tau_decay = st.number_input('Tau Decay (ms)', min_value=0.5, value=3.0, step=0.5, key='global_tau_decay', help="Time constant for the decaying phase of the template waveform (e.g., 3.0 ms for AMPA, 8.0 ms for GABA).")
+            if direction == 'Action Potential':
+                tau_decay = 3.0
+            else:
+                tau_decay = st.number_input('Tau Decay (ms)', min_value=0.5, value=3.0, step=0.5, key='global_tau_decay', help="Time constant for the decaying phase of the template waveform (e.g., 3.0 ms for AMPA, 8.0 ms for GABA).")
 
         st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
         bc1, bc2 = st.columns(2)
@@ -2181,6 +2256,11 @@ else:
     )
 
     # ---- metrics row ----
+    fdata = S.files.get(S.active, {}) if 'files' in S else {}
+    meta = fdata.get('meta', {})
+    unit_x = meta.get('unit_x', 's')
+    unit_y = meta.get('unit_y', 'pA')
+
     full_ev = S.events.get(S.active, pd.DataFrame())
     full_ev = normalize_events_frame(full_ev)
     dur = max(0.001, t_end - t_start)
@@ -2190,9 +2270,9 @@ else:
         ('Events', sm['n_events']),
         ('Manual', sm['n_manual_events']),
         ('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—'),
-        ('Mean |Amp|', f"{sm['amp_mean_pA']:.2f} pA" if pd.notna(sm['amp_mean_pA']) else '—'),
-        ('Med |Amp|', f"{sm['amp_median_pA']:.2f} pA" if pd.notna(sm['amp_median_pA']) else '—'),
-        ('Mean IEI', f"{sm['iei_mean_s']:.4f} s" if pd.notna(sm['iei_mean_s']) else '—'),
+        ('Mean |Amp|', f"{sm['amp_mean_pA']:.2f} {unit_y}" if pd.notna(sm['amp_mean_pA']) else '—'),
+        ('Med |Amp|', f"{sm['amp_median_pA']:.2f} {unit_y}" if pd.notna(sm['amp_median_pA']) else '—'),
+        ('Mean IEI', f"{sm['iei_mean_s']:.4f} {unit_x}" if pd.notna(sm['iei_mean_s']) else '—'),
     ]
     metric_cards = ''.join(
         f"<div class='metric-inline-card'><span class='metric-inline-label'>{label}</span><span class='metric-inline-value'>{value}</span></div>"
@@ -2211,16 +2291,18 @@ else:
         editor_key = f'ev_table_{S.active}_{table_revision}'
         editor_source_key = f'{editor_key}_source'
         S[editor_source_key] = win_ev.copy()
+        
+        prominence_col_name = f'AP Amplitude ({unit_y})' if direction == 'Action Potential' else f'Prominence ({unit_y})'
         with st.expander(f'📋 {len(win_ev)} events in window · {total_acc} accepted · {total_manual} manual · {total_rej} rejected total', expanded=False):
             st.data_editor(
                 win_ev, num_rows='dynamic', use_container_width=True, key=editor_key,
                 column_config={
                     'manual': None,
                     'accepted': st.column_config.CheckboxColumn('Accept'),
-                    'time_s': st.column_config.NumberColumn('Time (s)', format='%.4f'),
-                    'amplitude_pA': st.column_config.NumberColumn('Amplitude (pA)', format='%.2f'),
-                    'prominence': st.column_config.NumberColumn('Prominence', format='%.2f'),
-                    'iei_s': st.column_config.NumberColumn('IEI (s)', format='%.4f'),
+                    'time_s': st.column_config.NumberColumn(f'Time ({unit_x})', format='%.4f'),
+                    'amplitude_pA': st.column_config.NumberColumn(f'Amplitude ({unit_y})', format='%.2f'),
+                    'prominence': st.column_config.NumberColumn(prominence_col_name, format='%.2f'),
+                    'iei_s': st.column_config.NumberColumn(f'IEI ({unit_x})', format='%.4f'),
                 },
                 height=260,
                 on_change=apply_event_table_delta,
