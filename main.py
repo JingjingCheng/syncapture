@@ -2360,47 +2360,6 @@ else:
         height=int(figure_style.get('trace_height_px', 520)),
     )
 
-    # ---- Action Potential Features Row ----
-    if direction == 'Action Potential':
-        ap_res = analyze_action_potential_features(sub, win_events, S.settings[S.active])
-        if ap_res:
-            def format_val(val, unit, format_str='%.2f', err=None):
-                if pd.isna(val):
-                    return '—'
-                base = format_str % val
-                if err is not None and pd.notna(err) and err > 0:
-                    base += f" ± {format_str % err}"
-                return f"{base} {unit}"
-                
-            metrics_data = [
-                ('Firing Frequency', format_val(ap_res['firing_freq_hz'], 'Hz', '%.2f'), 'Spike rate over the window duration'),
-                ('Resting Membrane Potential', format_val(ap_res['rmp_mv'], 'mV', '%.1f'), 'Baseline potential estimated from initial trace phase'),
-            ]
-            
-            cards_html = "".join(
-                f"""
-                <div style='background:rgba(255,255,255,0.7);border:1px solid rgba(124,58,237,0.12);border-left:4px solid #7c3aed;border-radius:6px;padding:8px 12px;display:flex;flex-direction:column;gap:2px' title='{tooltip}'>
-                    <span style='font-size:0.75rem;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.3px'>{name}</span>
-                    <span style='font-size:1.1rem;font-weight:700;color:#7c3aed'>{val}</span>
-                </div>
-                """
-                for name, val, tooltip in metrics_data
-            )
-            
-            st.markdown(f"""
-            <div style='margin-top:0.6rem;margin-bottom:0.8rem;padding:0.9rem;border-radius:8px;background:linear-gradient(135deg, rgba(124,58,237,0.06) 0%, rgba(124,58,237,0.02) 100%);border:1px solid rgba(124,58,237,0.16);box-shadow:0 4px 6px -1px rgba(0,0,0,0.01)'>
-                <div style='display:flex;align-items:center;gap:6px;margin-bottom:0.75rem'>
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block">
-                        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-                    </svg>
-                    <span style='font-size:0.88rem;font-weight:700;color:#4b5563;letter-spacing:0.3px'>Action Potential Properties</span>
-                </div>
-                <div style='display:grid;grid-template-columns:repeat(auto-fit, minmax(170px, 1fr));gap:10px'>
-                    {cards_html}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
     # ---- metrics row ----
     fdata = S.files.get(S.active, {}) if 'files' in S else {}
     meta = fdata.get('meta', {})
@@ -2418,10 +2377,15 @@ else:
         n = len(acc)
         peak_mean = acc['amplitude_pA'].mean() if n else np.nan
         ap_amp_mean = acc['prominence'].mean() if n else np.nan
+        
+        ap_res = analyze_action_potential_features(sub, window_full_ev, S.settings[S.active])
+        rmp_val = ap_res.get('rmp_mv', np.nan)
+        
         metric_items = [
             ('Events', sm['n_events']),
             ('Manual', sm['n_manual_events']),
             ('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—'),
+            ('RMP', f"{rmp_val:.1f} mV" if pd.notna(rmp_val) else '—'),
             ('Mean Peak', f"{peak_mean:.2f} {unit_y}" if pd.notna(peak_mean) else '—'),
             ('Mean AP Amp', f"{ap_amp_mean:.2f} {unit_y}" if pd.notna(ap_amp_mean) else '—'),
             ('Mean IEI', f"{sm['iei_mean_s']:.4f} {unit_x}" if pd.notna(sm['iei_mean_s']) else '—'),
