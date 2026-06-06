@@ -1331,8 +1331,21 @@ def make_trace_figure(sub, events_df, settings, file_name, record=None, figure_s
     ax.spines[['left', 'bottom']].set_color(figure_style['axis_color'])
     ax.spines[['left', 'bottom']].set_linewidth(float(figure_style['axis_line_width']))
     ax.tick_params(colors=figure_style['tick_color'], labelsize=14, width=float(figure_style['axis_line_width']))
-    ax.set_xlabel('Time (s)', fontsize=18, color=figure_style['axis_color'], fontfamily=figure_style['font_family'])
-    ax.set_ylabel('Current (pA)', fontsize=18, color=figure_style['axis_color'], fontfamily=figure_style['font_family'])
+    fdata = S.files.get(file_name, {}) if 'files' in S else {}
+    meta = fdata.get('meta', {})
+    unit_x = meta.get('unit_x', 's')
+    unit_y = meta.get('unit_y', 'pA')
+    
+    unit_y_lower = str(unit_y).lower()
+    if 'v' in unit_y_lower:
+        y_label = f'Voltage ({unit_y})'
+    elif 'a' in unit_y_lower:
+        y_label = f'Current ({unit_y})'
+    else:
+        y_label = f'Signal ({unit_y})'
+
+    ax.set_xlabel(f'Time ({unit_x})', fontsize=18, color=figure_style['axis_color'], fontfamily=figure_style['font_family'])
+    ax.set_ylabel(y_label, fontsize=18, color=figure_style['axis_color'], fontfamily=figure_style['font_family'])
     ax.set_title(format_trace_title(file_name, record), fontsize=18, color=figure_style['axis_color'], pad=8, fontfamily=figure_style['font_family'])
     if figure_style.get('show_grid'):
         ax.grid(True, color=figure_style['grid_color'], linewidth=0.6, alpha=0.8)
@@ -1377,6 +1390,22 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name, record=None, f
     xaxis_revision = f"{file_name}:{settings.get('sweep')}:{settings.get('t_start')}:{settings.get('t_end')}"
     yaxis_revision = f"{file_name}:{settings.get('y_min')}:{settings.get('y_max')}"
     fig = go.Figure()
+
+    fdata = S.files.get(file_name, {}) if 'files' in S else {}
+    meta = fdata.get('meta', {})
+    unit_x = meta.get('unit_x', 's')
+    unit_y = meta.get('unit_y', 'pA')
+    
+    unit_y_lower = str(unit_y).lower()
+    if 'v' in unit_y_lower:
+        y_label = f'Voltage ({unit_y})'
+    elif 'a' in unit_y_lower:
+        y_label = f'Current ({unit_y})'
+    else:
+        y_label = f'Signal ({unit_y})'
+        
+    x_label = f'Time ({unit_x})'
+
     if not sub.empty:
         bl_end = sub['time_s'].min() + (sub['time_s'].max() - sub['time_s'].min()) * settings.get('baseline_pct', 20) / 100
         fig.add_vrect(
@@ -1389,7 +1418,7 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name, record=None, f
             x=sub['time_s'], y=sub['signal'],
             mode='lines', line=dict(color=figure_style['trace_line_color'], width=float(figure_style['trace_line_width'])),
             name='Trace',
-            hovertemplate='Time: %{x:.4f}s<br>Current: %{y:.2f}pA<extra></extra>',
+            hovertemplate=f'Time: %{{x:.4f}}{unit_x}<br>{y_label.split(" ")[0]}: %{{y:.2f}}{unit_y}<extra></extra>',
         ))
         if events_df is not None and not events_df.empty:
             events_df = normalize_events_frame(events_df)
@@ -1409,7 +1438,7 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name, record=None, f
                     ids=acc_ids,
                     customdata=acc_custom,
                     name=f'{len(detected_acc)} detected',
-                    hovertemplate='Time: %{x:.4f}s<br>Amp: %{customdata[2]:.2f}pA<br>Click to reject<extra></extra>',
+                    hovertemplate=f'Time: %{{x:.4f}}{unit_x}<br>Amp: %{{customdata[2]:.2f}}{unit_y}<br>Click to reject<extra></extra>',
                 ))
             if not manual_acc.empty:
                 manual_custom = [[int(idx), 1, float(row['amplitude_pA']), 1] for idx, row in manual_acc.iterrows()]
@@ -1421,7 +1450,7 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name, record=None, f
                     ids=manual_ids,
                     customdata=manual_custom,
                     name=f'{len(manual_acc)} manual',
-                    hovertemplate='Time: %{x:.4f}s<br>Amp: %{customdata[2]:.2f}pA<br>Click to remove<extra></extra>',
+                    hovertemplate=f'Time: %{{x:.4f}}{unit_x}<br>Amp: %{{customdata[2]:.2f}}{unit_y}<br>Click to remove<extra></extra>',
                 ))
             if not rej.empty:
                 rej_custom = [[int(idx), 0, float(row['amplitude_pA']), int(bool(row['manual']))] for idx, row in rej.iterrows()]
@@ -1433,19 +1462,19 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name, record=None, f
                     ids=rej_ids,
                     customdata=rej_custom,
                     name=f'{len(rej)} rejected',
-                    hovertemplate='Time: %{x:.4f}s<br>Amp: %{customdata[2]:.2f}pA<br>Click to restore<extra></extra>',
+                    hovertemplate=f'Time: %{{x:.4f}}{unit_x}<br>Amp: %{{customdata[2]:.2f}}{unit_y}<br>Click to restore<extra></extra>',
                 ))
     fig.update_layout(
         title=dict(text=format_trace_title(file_name, record), font=dict(size=18, color=figure_style['axis_color'], family=figure_style['font_family'])),
         xaxis=dict(
-            title=dict(text='Time (s)', font=dict(size=18, color=figure_style['axis_color'], family=figure_style['font_family'])),
+            title=dict(text=x_label, font=dict(size=18, color=figure_style['axis_color'], family=figure_style['font_family'])),
             tickfont=dict(size=14, color=figure_style['tick_color'], family=figure_style['font_family']),
             showgrid=bool(figure_style.get('show_grid')), gridcolor=figure_style['grid_color'], zeroline=False,
             linecolor=figure_style['axis_color'], linewidth=float(figure_style['axis_line_width']), mirror=False,
             uirevision=xaxis_revision,
         ),
         yaxis=dict(
-            title=dict(text='Current (pA)', font=dict(size=18, color=figure_style['axis_color'], family=figure_style['font_family'])),
+            title=dict(text=y_label, font=dict(size=18, color=figure_style['axis_color'], family=figure_style['font_family'])),
             tickfont=dict(size=14, color=figure_style['tick_color'], family=figure_style['font_family']),
             showgrid=bool(figure_style.get('show_grid')), gridcolor=figure_style['grid_color'], zeroline=False,
             linecolor=figure_style['axis_color'], linewidth=float(figure_style['axis_line_width']), mirror=False,
@@ -1748,6 +1777,21 @@ with st.sidebar:
                 try:
                     abf, tmp = load_abf(f)
                     df_sw = abf_to_sweeps(abf)
+                    # Extract units
+                    unit_y = 'pA'
+                    if hasattr(abf, 'sweepUnitsY'):
+                        unit_y = abf.sweepUnitsY
+                    elif hasattr(abf, 'adcUnits'):
+                        unit_y = abf.adcUnits[0] if isinstance(abf.adcUnits, list) and len(abf.adcUnits) > 0 else abf.adcUnits
+                    if not isinstance(unit_y, str):
+                        unit_y = str(unit_y)
+
+                    unit_x = 's'
+                    if hasattr(abf, 'sweepUnitsX'):
+                        unit_x = abf.sweepUnitsX
+                    if not isinstance(unit_x, str):
+                        unit_x = str(unit_x)
+
                     S.files[f.name] = {
                         'abf_path': str(tmp),
                         'meta': {
@@ -1755,7 +1799,8 @@ with st.sidebar:
                             'sample_rate_hz': float(abf.dataRate),
                             'sweep_count': len(abf.sweepList),
                             'protocol': getattr(abf, 'protocol', ''),
-                            'unit_y': getattr(abf, 'adcUnits', 'pA') if hasattr(abf, 'adcUnits') else 'pA',
+                            'unit_x': unit_x,
+                            'unit_y': unit_y,
                             'duration_s': float(df_sw.groupby('sweep')['time_s'].max().iloc[0]) if not df_sw.empty else 0.0,
                         },
                         'df': df_sw,
@@ -1910,12 +1955,7 @@ with st.sidebar:
 
     with st.expander("🎵 Background Music (007 Theme)", expanded=False):
         st.markdown("<p style='font-size:0.75rem;color:gray;margin-bottom:0.4rem;line-height:1.2'>Listen to the James Bond Theme or paste your own MP3 URL! (Maintains playback position across uploads/actions)</p>", unsafe_allow_html=True)
-        raw_music_url = st.text_input("Audio URL", "https://archive.org/download/tvtunes_4619/James%20Bond.mp3", label_visibility="collapsed")
-        
-        # Auto-convert Archive.org details page links to direct download links
-        music_url = raw_music_url.strip()
-        if "archive.org/details/" in music_url:
-            music_url = music_url.replace("archive.org/details/", "archive.org/download/")
+        music_url = st.text_input("Audio URL", "https://archive.org/download/tvtunes_4619/James%20Bond.mp3", label_visibility="collapsed")
         
         player_html = f"""
         <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 0.8rem; color: #374151; display: flex; flex-direction: column; gap: 8px;">
