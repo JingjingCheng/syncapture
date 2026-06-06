@@ -2332,18 +2332,22 @@ else:
     if _save_btn:
         all_ev_s = normalize_events_frame(S.events.get(S.active, pd.DataFrame(columns=EVENT_COLUMNS)))
         dur_s = max(0.001, t_end - t_start)
-        sm_s = summary_from_events(all_ev_s[(all_ev_s['time_s'] >= t_start) & (all_ev_s['time_s'] <= t_end)] if not all_ev_s.empty else all_ev_s, dur_s)
-        rec = {
-            'file_name': S.active, 'cell_id': cell_id, 'individual': individual, 'group': group,
-            'status': status, 'sweep': sweep, 'window_start_s': t_start, 'window_end_s': t_end, 'window_dur_s': dur_s,
-            **sm_s, 'lp_hz': lp_hz, 'direction': direction, 'sample_rate_hz': meta['sample_rate_hz'],
-        }
         if direction == 'Action Potential':
             ap_res_save = analyze_action_potential_features(sub, all_ev_s[(all_ev_s['time_s'] >= t_start) & (all_ev_s['time_s'] <= t_end)] if not all_ev_s.empty else all_ev_s, S.settings[S.active])
-            rec.update({
-                'rmp_mv': ap_res_save.get('rmp_mv'),
+            rec = {
+                'file_name': S.active, 'cell_id': cell_id, 'individual': individual, 'group': group,
+                'status': status, 'sweep': sweep, 'window_start_s': t_start, 'window_end_s': t_end, 'window_dur_s': dur_s,
+                'direction': direction, 'sample_rate_hz': meta['sample_rate_hz'], 'lp_hz': lp_hz,
                 'firing_freq_hz': ap_res_save.get('firing_freq_hz'),
-            })
+                'rmp_mv': ap_res_save.get('rmp_mv'),
+            }
+        else:
+            sm_s = summary_from_events(all_ev_s[(all_ev_s['time_s'] >= t_start) & (all_ev_s['time_s'] <= t_end)] if not all_ev_s.empty else all_ev_s, dur_s)
+            rec = {
+                'file_name': S.active, 'cell_id': cell_id, 'individual': individual, 'group': group,
+                'status': status, 'sweep': sweep, 'window_start_s': t_start, 'window_end_s': t_end, 'window_dur_s': dur_s,
+                **sm_s, 'lp_hz': lp_hz, 'direction': direction, 'sample_rate_hz': meta['sample_rate_hz'],
+            }
         S.records = [r for r in S.records if r.get('file_name') != S.active]
         S.records.append(json_safe(rec))
         st.toast(f'✓ Saved {cell_id} → dataset ({len(S.records)} files)')
@@ -2373,22 +2377,13 @@ else:
     sm = summary_from_events(window_full_ev, dur)
     direction = S.settings.get(S.active, {}).get('direction', 'inward (EPSC)')
     if direction == 'Action Potential':
-        acc = window_full_ev[window_full_ev['accepted'] == True] if not window_full_ev.empty else pd.DataFrame()
-        n = len(acc)
-        peak_mean = acc['amplitude_pA'].mean() if n else np.nan
-        ap_amp_mean = acc['prominence'].mean() if n else np.nan
-        
         ap_res = analyze_action_potential_features(sub, window_full_ev, S.settings[S.active])
         rmp_val = ap_res.get('rmp_mv', np.nan)
+        freq_val = ap_res.get('firing_freq_hz', np.nan)
         
         metric_items = [
-            ('Events', sm['n_events']),
-            ('Manual', sm['n_manual_events']),
-            ('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—'),
-            ('RMP', f"{rmp_val:.1f} mV" if pd.notna(rmp_val) else '—'),
-            ('Mean Peak', f"{peak_mean:.2f} {unit_y}" if pd.notna(peak_mean) else '—'),
-            ('Mean AP Amp', f"{ap_amp_mean:.2f} {unit_y}" if pd.notna(ap_amp_mean) else '—'),
-            ('Mean IEI', f"{sm['iei_mean_s']:.4f} {unit_x}" if pd.notna(sm['iei_mean_s']) else '—'),
+            ('Firing Frequency', f"{freq_val:.2f} Hz" if pd.notna(freq_val) else '—'),
+            ('Resting Membrane Potential', f"{rmp_val:.1f} mV" if pd.notna(rmp_val) else '—'),
         ]
     else:
         metric_items = [
