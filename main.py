@@ -952,10 +952,14 @@ def add_chart_event(file_name, time_s):
     nearest_pos = int(np.argmin(np.abs(times - time_s)))
     event_time = float(times[nearest_pos])
     signal_at_event = float(signal[nearest_pos])
-    baseline_pct = float(settings.get('baseline_pct', 20) or 20)
-    nbase = max(1, int(len(signal) * baseline_pct / 100))
-    baseline = float(np.median(signal[:nbase]))
-    amplitude = signal_at_event - baseline
+    direction = settings.get('direction', 'inward (EPSC)')
+    if direction == 'Action Potential':
+        amplitude = signal_at_event
+    else:
+        baseline_pct = float(settings.get('baseline_pct', 20) or 20)
+        nbase = max(1, int(len(signal) * baseline_pct / 100))
+        baseline = float(np.median(signal[:nbase]))
+        amplitude = signal_at_event - baseline
 
     events_by_file = st.session_state.setdefault('events', {})
     events_df = normalize_events_frame(events_by_file.get(file_name, pd.DataFrame(columns=EVENT_COLUMNS)))
@@ -1117,9 +1121,7 @@ def detect_synaptic_events(trace, time_s, direction, prominence, distance_ms, ba
             peak_voltages = raw_peak_voltages[valid_idx]
             ap_amplitudes = raw_amplitudes[valid_idx]
             
-            n_base = max(1, int(len(trace) * baseline_pct / 100))
-            baseline = np.median(trace[:n_base])
-            amplitude_pA = peak_voltages - baseline
+            amplitude_pA = peak_voltages
             
             iei = np.diff(peak_times_s)
             iei = np.concatenate([[np.nan], iei])
@@ -1603,12 +1605,15 @@ def make_trace_figure(sub, events_df, settings, file_name, record=None, figure_s
             detected_acc = acc[acc['manual'] != True]
             manual_acc = acc[acc['manual'] == True]
             rej = events_df[(events_df['accepted'] != True) & (events_df['manual'] != True)]
+            
+            y_offset = 0.0 if direction == 'Action Potential' else baseline
+            
             if not detected_acc.empty:
-                ax.scatter(detected_acc['time_s'], detected_acc['amplitude_pA'] + baseline, s=28, color=marker_color, zorder=3, label=f"{len(detected_acc)} detected")
+                ax.scatter(detected_acc['time_s'], detected_acc['amplitude_pA'] + y_offset, s=28, color=marker_color, zorder=3, label=f"{len(detected_acc)} detected")
             if not manual_acc.empty:
-                ax.scatter(manual_acc['time_s'], manual_acc['amplitude_pA'] + baseline, s=34, color='#2563eb', zorder=4, marker='D', label=f"{len(manual_acc)} manual")
+                ax.scatter(manual_acc['time_s'], manual_acc['amplitude_pA'] + y_offset, s=34, color='#2563eb', zorder=4, marker='D', label=f"{len(manual_acc)} manual")
             if not rej.empty:
-                ax.scatter(rej['time_s'], rej['amplitude_pA'] + baseline, s=18, color='#9ca3af', zorder=2, marker='x', label=f"{len(rej)} rejected")
+                ax.scatter(rej['time_s'], rej['amplitude_pA'] + y_offset, s=18, color='#9ca3af', zorder=2, marker='x', label=f"{len(rej)} rejected")
         ax.legend(fontsize=max(7, int(figure_style['tick_label_size']) - 1), frameon=False, loc='upper right')
         if is_valid_y_range(settings.get('y_min'), settings.get('y_max')):
             ax.set_ylim(float(settings['y_min']), float(settings['y_max']))
@@ -1675,41 +1680,47 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name, record=None, f
             detected_acc = acc[acc['manual'] != True]
             manual_acc = acc[acc['manual'] == True]
             rej = events_df[(events_df['accepted'] != True) & (events_df['manual'] != True)]
+            
+            y_offset = 0.0 if direction == 'Action Potential' else baseline
+            
             if not detected_acc.empty:
-                acc_custom = [[int(idx), 1, float(row['amplitude_pA']), 0] for idx, row in detected_acc.iterrows()]
+                acc_custom = [[int(idx), 1, float(row['amplitude_pA']), 0, float(row['prominence'])] for idx, row in detected_acc.iterrows()]
                 acc_ids = [str(int(idx)) for idx in detected_acc.index]
+                detected_hover = f'Time: %{{x:.4f}}{unit_x}<br>Peak: %{{customdata[2]:.2f}}{unit_y}<br>AP Amp: %{{customdata[4]:.2f}}{unit_y}<br>Click to reject<extra></extra>' if direction == 'Action Potential' else f'Time: %{{x:.4f}}{unit_x}<br>Amp: %{{customdata[2]:.2f}}{unit_y}<br>Click to reject<extra></extra>'
                 fig.add_trace(go.Scatter(
-                    x=detected_acc['time_s'], y=detected_acc['amplitude_pA'] + baseline,
+                    x=detected_acc['time_s'], y=detected_acc['amplitude_pA'] + y_offset,
                     mode='markers',
                     marker=dict(color=marker_color, size=8, line=dict(color='white', width=0.8)),
                     ids=acc_ids,
                     customdata=acc_custom,
                     name=f'{len(detected_acc)} detected',
-                    hovertemplate=f'Time: %{{x:.4f}}{unit_x}<br>Amp: %{{customdata[2]:.2f}}{unit_y}<br>Click to reject<extra></extra>',
+                    hovertemplate=detected_hover,
                 ))
             if not manual_acc.empty:
-                manual_custom = [[int(idx), 1, float(row['amplitude_pA']), 1] for idx, row in manual_acc.iterrows()]
+                manual_custom = [[int(idx), 1, float(row['amplitude_pA']), 1, float(row['prominence'])] for idx, row in manual_acc.iterrows()]
                 manual_ids = [str(int(idx)) for idx in manual_acc.index]
+                manual_hover = f'Time: %{{x:.4f}}{unit_x}<br>Peak: %{{customdata[2]:.2f}}{unit_y}<br>AP Amp: %{{customdata[4]:.2f}}{unit_y}<br>Click to remove<extra></extra>' if direction == 'Action Potential' else f'Time: %{{x:.4f}}{unit_x}<br>Amp: %{{customdata[2]:.2f}}{unit_y}<br>Click to remove<extra></extra>'
                 fig.add_trace(go.Scatter(
-                    x=manual_acc['time_s'], y=manual_acc['amplitude_pA'] + baseline,
+                    x=manual_acc['time_s'], y=manual_acc['amplitude_pA'] + y_offset,
                     mode='markers',
                     marker=dict(color='#2563eb', size=9, symbol='diamond', line=dict(color='white', width=0.8)),
                     ids=manual_ids,
                     customdata=manual_custom,
                     name=f'{len(manual_acc)} manual',
-                    hovertemplate=f'Time: %{{x:.4f}}{unit_x}<br>Amp: %{{customdata[2]:.2f}}{unit_y}<br>Click to remove<extra></extra>',
+                    hovertemplate=manual_hover,
                 ))
             if not rej.empty:
-                rej_custom = [[int(idx), 0, float(row['amplitude_pA']), int(bool(row['manual']))] for idx, row in rej.iterrows()]
+                rej_custom = [[int(idx), 0, float(row['amplitude_pA']), int(bool(row['manual'])), float(row['prominence'])] for idx, row in rej.iterrows()]
                 rej_ids = [str(int(idx)) for idx in rej.index]
+                rej_hover = f'Time: %{{x:.4f}}{unit_x}<br>Peak: %{{customdata[2]:.2f}}{unit_y}<br>AP Amp: %{{customdata[4]:.2f}}{unit_y}<br>Click to restore<extra></extra>' if direction == 'Action Potential' else f'Time: %{{x:.4f}}{unit_x}<br>Amp: %{{customdata[2]:.2f}}{unit_y}<br>Click to restore<extra></extra>'
                 fig.add_trace(go.Scatter(
-                    x=rej['time_s'], y=rej['amplitude_pA'] + baseline,
+                    x=rej['time_s'], y=rej['amplitude_pA'] + y_offset,
                     mode='markers',
                     marker=dict(color='#9ca3af', size=7, symbol='x', line=dict(width=1.5)),
                     ids=rej_ids,
                     customdata=rej_custom,
                     name=f'{len(rej)} rejected',
-                    hovertemplate=f'Time: %{{x:.4f}}{unit_x}<br>Amp: %{{customdata[2]:.2f}}{unit_y}<br>Click to restore<extra></extra>',
+                    hovertemplate=rej_hover,
                 ))
     fig.update_layout(
         title=dict(text=format_trace_title(file_name, record), font=dict(size=18, color=figure_style['axis_color'], family=figure_style['font_family'])),
@@ -2113,6 +2124,17 @@ with st.sidebar:
         y_step = max((default_y_max - default_y_min) / 100, 0.001)
         y_min_key = f'y_min_{S.active}'
         y_max_key = f'y_max_{S.active}'
+        
+        current_dir = st.session_state.get('global_direction', 'inward (EPSC)')
+        last_dir_key = f'last_dir_{S.active}'
+        if last_dir_key not in st.session_state:
+            st.session_state[last_dir_key] = current_dir
+        elif st.session_state[last_dir_key] != current_dir:
+            st.session_state[last_dir_key] = current_dir
+            saved_y_min, saved_y_max = default_y_min, default_y_max
+            st.session_state[y_min_key] = float(default_y_min)
+            st.session_state[y_max_key] = float(default_y_max)
+
         if y_min_key not in st.session_state:
             st.session_state[y_min_key] = float(saved_y_min)
         if y_max_key not in st.session_state:
@@ -2531,14 +2553,29 @@ else:
     dur = max(0.001, t_end - t_start)
     window_full_ev = full_ev[(full_ev['time_s'] >= t_start) & (full_ev['time_s'] <= t_end)] if not full_ev.empty else pd.DataFrame(columns=EVENT_COLUMNS)
     sm = summary_from_events(window_full_ev, dur)
-    metric_items = [
-        ('Events', sm['n_events']),
-        ('Manual', sm['n_manual_events']),
-        ('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—'),
-        ('Mean |Amp|', f"{sm['amp_mean_pA']:.2f} {unit_y}" if pd.notna(sm['amp_mean_pA']) else '—'),
-        ('Med |Amp|', f"{sm['amp_median_pA']:.2f} {unit_y}" if pd.notna(sm['amp_median_pA']) else '—'),
-        ('Mean IEI', f"{sm['iei_mean_s']:.4f} {unit_x}" if pd.notna(sm['iei_mean_s']) else '—'),
-    ]
+    direction = S.settings.get(S.active, {}).get('direction', 'inward (EPSC)')
+    if direction == 'Action Potential':
+        acc = window_full_ev[window_full_ev['accepted'] == True] if not window_full_ev.empty else pd.DataFrame()
+        n = len(acc)
+        peak_mean = acc['amplitude_pA'].mean() if n else np.nan
+        ap_amp_mean = acc['prominence'].mean() if n else np.nan
+        metric_items = [
+            ('Events', sm['n_events']),
+            ('Manual', sm['n_manual_events']),
+            ('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—'),
+            ('Mean Peak', f"{peak_mean:.2f} {unit_y}" if pd.notna(peak_mean) else '—'),
+            ('Mean AP Amp', f"{ap_amp_mean:.2f} {unit_y}" if pd.notna(ap_amp_mean) else '—'),
+            ('Mean IEI', f"{sm['iei_mean_s']:.4f} {unit_x}" if pd.notna(sm['iei_mean_s']) else '—'),
+        ]
+    else:
+        metric_items = [
+            ('Events', sm['n_events']),
+            ('Manual', sm['n_manual_events']),
+            ('Freq (Hz)', f"{sm['freq_hz']:.4f}" if pd.notna(sm['freq_hz']) else '—'),
+            ('Mean |Amp|', f"{sm['amp_mean_pA']:.2f} {unit_y}" if pd.notna(sm['amp_mean_pA']) else '—'),
+            ('Med |Amp|', f"{sm['amp_median_pA']:.2f} {unit_y}" if pd.notna(sm['amp_median_pA']) else '—'),
+            ('Mean IEI', f"{sm['iei_mean_s']:.4f} {unit_x}" if pd.notna(sm['iei_mean_s']) else '—'),
+        ]
     metric_cards = ''.join(
         f"<div class='metric-inline-card'><span class='metric-inline-label'>{label}</span><span class='metric-inline-value'>{value}</span></div>"
         for label, value in metric_items
@@ -2557,6 +2594,7 @@ else:
         editor_source_key = f'{editor_key}_source'
         S[editor_source_key] = win_ev.copy()
         
+        amplitude_col_name = f'AP Peak ({unit_y})' if direction == 'Action Potential' else f'Amplitude ({unit_y})'
         prominence_col_name = f'AP Amplitude ({unit_y})' if direction == 'Action Potential' else f'Prominence ({unit_y})'
         with st.expander(f'📋 {len(win_ev)} events in window · {total_acc} accepted · {total_manual} manual · {total_rej} rejected total', expanded=False):
             st.data_editor(
@@ -2565,7 +2603,7 @@ else:
                     'manual': None,
                     'accepted': st.column_config.CheckboxColumn('Accept'),
                     'time_s': st.column_config.NumberColumn(f'Time ({unit_x})', format='%.4f'),
-                    'amplitude_pA': st.column_config.NumberColumn(f'Amplitude ({unit_y})', format='%.2f'),
+                    'amplitude_pA': st.column_config.NumberColumn(amplitude_col_name, format='%.2f'),
                     'prominence': st.column_config.NumberColumn(prominence_col_name, format='%.2f'),
                     'iei_s': st.column_config.NumberColumn(f'IEI ({unit_x})', format='%.4f'),
                 },
