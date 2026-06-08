@@ -1463,6 +1463,9 @@ def make_trace_figure(sub, events_df, settings, file_name, record=None, figure_s
         bl_end = sub['time_s'].min() + (sub['time_s'].max() - sub['time_s'].min()) * settings.get('baseline_pct', 20) / 100
         ax.axvspan(sub['time_s'].min(), bl_end, color='#f3f4f6', alpha=0.5, label='baseline region', zorder=0)
         ax.plot(sub['time_s'], sub['signal'], lw=float(figure_style['trace_line_width']), color=figure_style['trace_line_color'], zorder=1)
+        if direction == 'Action Potential' and 'ap_threshold_mv' in settings:
+            ap_threshold = settings['ap_threshold_mv']
+            ax.axhline(y=ap_threshold, color='red', linestyle='--', linewidth=1.2, zorder=2)
         if events_df is not None and not events_df.empty:
             events_df = normalize_events_frame(events_df)
             nbase = max(1, int(len(sub) * settings.get('baseline_pct', 20) / 100))
@@ -1547,6 +1550,15 @@ def make_trace_figure_plotly(sub, events_df, settings, file_name, record=None, f
             name='Trace',
             hovertemplate=f'Time: %{{x:.4f}}{unit_x}<br>{y_label.split(" ")[0]}: %{{y:.2f}}{unit_y}<extra></extra>',
         ))
+        if direction == 'Action Potential' and 'ap_threshold_mv' in settings:
+            ap_threshold = settings['ap_threshold_mv']
+            fig.add_hline(
+                y=ap_threshold,
+                line_dash="dash",
+                line_color="red",
+                line_width=1.5,
+                layer="above"
+            )
         if events_df is not None and not events_df.empty:
             events_df = normalize_events_frame(events_df)
             nbase = max(1, int(len(sub) * settings.get('baseline_pct', 20) / 100))
@@ -1792,16 +1804,30 @@ def show_donation_dialog():
     st.markdown("---")
     st.markdown("##### 🇨🇳 国内用户 (WeChat / Alipay)")
     import os
-    if os.path.exists('donate.JPG'):
+    donate_file = None
+    if os.path.exists('.'):
+        for f in os.listdir('.'):
+            if f.lower().startswith('donate.') and f.lower().split('.')[-1] in ['jpg', 'jpeg', 'png']:
+                donate_file = f
+                break
+                
+    if donate_file:
         _, center_col, _ = st.columns([1, 2, 1])
         with center_col:
-            st.image('donate.JPG', use_container_width=True)
-    elif os.path.exists('donate.jpg'):
-        _, center_col, _ = st.columns([1, 2, 1])
-        with center_col:
-            st.image('donate.jpg', use_container_width=True)
+            st.image(donate_file, use_container_width=True)
     else:
-        st.info("Donation QR code not found.")
+        st.info("Donation QR code not found. To display your WeChat/Alipay QR code, name your image file `donate.jpg` or `donate.png` and place it in the root folder of this repository.")
+        uploaded_qr = st.file_uploader("Upload QR code to save in workspace", type=['jpg', 'jpeg', 'png'], key="donation_qr_uploader")
+        if uploaded_qr is not None:
+            try:
+                ext = uploaded_qr.name.split('.')[-1].lower()
+                filename = f"donate.{ext}"
+                with open(filename, "wb") as f_out:
+                    f_out.write(uploaded_qr.getbuffer())
+                st.success(f"Successfully saved as `{filename}`! Please commit and push it to GitHub to display it on Streamlit Cloud.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error saving file: {e}")
 
 # ───────────────────────────────────────────
 #  SUGGESTION DIALOG
@@ -1824,9 +1850,10 @@ def show_suggestion_dialog():
             try:
                 import requests
                 data = {
-                    "email": email if email.strip() else "anonymous",
                     "message": suggestion
                 }
+                if email.strip():
+                    data["email"] = email.strip()
                 if "PLACEHOLDER" in webhook_url:
                     st.warning("⚠️ Developer note: Please replace the `webhook_url` in main.py with your real Formspree endpoint (formspree.io).")
                     st.success("Your suggestion was collected (Test Mode).")
