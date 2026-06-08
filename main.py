@@ -2047,23 +2047,10 @@ with st.sidebar:
         if y_max_key not in st.session_state:
             st.session_state[y_max_key] = float(saved_y_max)
 
-        st.markdown("<p style='font-size:0.75rem;font-weight:600;color:color-mix(in srgb,currentColor 65%,transparent);text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Y Scale</p>", unsafe_allow_html=True)
-        yc1, yc2 = st.columns(2)
-        with yc1:
-            y_min = st.number_input('Y min (pA)', step=float(y_step), format='%.3f', key=y_min_key)
-        with yc2:
-            y_max = st.number_input('Y max (pA)', step=float(y_step), format='%.3f', key=y_max_key)
-        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
-        st.button(
-            'Reset Y to data',
-            key=f'reset_y_{S.active}',
-            use_container_width=True,
-            on_click=reset_y_scale,
-            args=(S.active, default_y_min, default_y_max),
-        )
+        y_min = float(st.session_state.get(y_min_key, saved_y_min))
+        y_max = float(st.session_state.get(y_max_key, saved_y_max))
         if not is_valid_y_range(y_min, y_max):
-            st.warning('Y max must be greater than Y min.')
-            y_min, y_max = saved_y_min, saved_y_max
+            y_min, y_max = float(default_y_min), float(default_y_max)
 
         st.markdown("<p style='font-size:0.75rem;font-weight:600;color:color-mix(in srgb,currentColor 65%,transparent);text-transform:uppercase;letter-spacing:0.5px;margin:0.3rem 0 0.3rem 0'>Detection</p>", unsafe_allow_html=True)
         direction = st.selectbox('Direction', ['inward (EPSC)', 'outward (IPSC)', 'Action Potential'], index=0, key='global_direction')
