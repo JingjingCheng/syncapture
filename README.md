@@ -17,7 +17,7 @@
 - 🔍 **Automated Event Detection**: High-performance mEPSC/mIPSC detection powered by `scipy.signal.find_peaks`, and **Action Potential** detection & feature extraction using the `eFEL` library.
 - 📊 **Interactive WebGL Plots**: Rendered via Plotly WebGL (`go.Scattergl`), supporting smooth dragging, scrolling, custom zooming, panning, and instant double-click resetting.
 - ✅ **Manual Review & Annotation**: Curate individual detected events by accepting or rejecting them directly in an editable event table.
-- 📁 **Unified Exports**: Download all exports in a single structured ZIP file containing Prism-ready CSVs, high-quality trace PNGs, and a global summary.
+- 📁 **Unified Exports**: Download all exports in a single structured ZIP file containing Prism-ready CSVs, high-quality vector trace & summary plots (PDF & SVG), and global review states.
 - 🏷️ **Metadata Labeling**: Easily group and organize recordings by `group`, `individual`, and `cell_id` directly in the UI.
 
 ### Installation
@@ -88,7 +88,7 @@ You can deploy this application for free on [Streamlit Community Cloud](https://
 | `pyabf` | High-fidelity reading of Axon Binary Format (.abf) files |
 | `scipy` | Digital filtering (Butterworth) and peak detection |
 | `pandas` | Structured tabular data processing |
-| `matplotlib` | High-quality static rendering for trace PNG exports |
+| `matplotlib` | High-quality vector rendering (PDF/SVG) for trace & summary exports |
 | `numpy` | High-performance numerical computations |
 | `plotly` | Interactive WebGL-accelerated chart plotting |
 | `efel` | Electrophys Feature Extraction Library (eFEL) for action potential features |
@@ -115,7 +115,7 @@ syncapture/
 - 🔍 **自动事件检测**：基于 `scipy.signal.find_peaks` 的高性能 mEPSC/mIPSC 自动检测算法，以及基于 `eFEL` 库的 **动作电位（Action Potential）** 自动检测与特征提取。
 - 📊 **交互式 WebGL 图表**：基于 Plotly WebGL (`go.Scattergl`) 渲染，支持极速拖拽缩放、滚轮缩放、双击重置和悬停提示。
 - ✅ **人工审核**：可在编辑表格中直接勾选或修改每个检测事件的 `accepted` 状态，图表数据实时更新。
-- 📁 **一键整合导出**：支持下载一键打包的 ZIP 文件，内含 Prism 格式 CSV、高清晰度轨迹图 PNG 以及全局统计报告。
+- 📁 **一键整合导出**：支持下载一键打包的 ZIP 文件，内含 Prism 格式 CSV、高品质矢量图（PDF & SVG，包含 trace 轨迹图与统计图）以及全局审核状态。
 - 🏷️ **元数据标注**：可在 UI 中为每组记录设置组别（group）、个体（individual）和细胞 ID（cell_id）。
 
 ### 安装说明
@@ -186,7 +186,7 @@ streamlit run main.py
 | `pyabf` | 读取 Axon 二进制格式 (.abf) 电生理数据 |
 | `scipy` | 数字信号滤波（Butterworth）与波峰检测 |
 | `pandas` | 结构化表格数据读取与处理 |
-| `matplotlib` | 静态 trace PNG 导出渲染 |
+| `matplotlib` | 矢量 trace 与 summary 导出渲染 (PDF/SVG) |
 | `numpy` | 矩阵与高性能数值计算 |
 | `plotly` | 交互式 WebGL 加速图表绘制 |
 | `efel` | 细胞电生理特征提取库 (eFEL)，用于提取动作电位特征 |
